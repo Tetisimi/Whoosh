@@ -132,6 +132,12 @@ signaling.on('peer-joined', (peer) => {
   peerMeta.set(peer.id, peer);
   radar.addPeer(peer);
   playChime('discovered');
+  // If we're hosting a room, close the modal immediately — no need to wait
+  // for the WebRTC channel to open before dismissing the pairing UI.
+  if (currentRoomCode) {
+    pairing.closeModal();
+    showToast(`${peer.codename} joined — connecting…`);
+  }
   // We are the existing peer — only initiate if our ID is lower
   const shouldInitiate = localPeerId < peer.id;
   initiatePeerConnection(peer.id, shouldInitiate);
