@@ -13,29 +13,41 @@
 
 // Fetched once, shared across all peer connections
 let iceServersCache = null;
+let iceServersFetchPromise = null;
 
 async function getIceServers() {
   if (iceServersCache) return iceServersCache;
-  try {
-    const { protocol, hostname } = window.location;
-    const httpProto = protocol === 'https:' ? 'https' : 'http';
-    const signalingBase = import.meta.env.VITE_SIGNALING_URL
-      ? import.meta.env.VITE_SIGNALING_URL.replace(/^ws/, 'http')
-      : (hostname === 'localhost' || hostname === '127.0.0.1')
-        ? 'http://localhost:3000'
-        : `${httpProto}://${hostname}:3000`;
+  // Deduplicate concurrent fetches
+  if (!iceServersFetchPromise) {
+    iceServersFetchPromise = (async () => {
+      try {
+        const { protocol, hostname } = window.location;
+        const httpProto = protocol === 'https:' ? 'https' : 'http';
+        const signalingBase = import.meta.env.VITE_SIGNALING_URL
+          ? import.meta.env.VITE_SIGNALING_URL.replace(/^ws/, 'http')
+          : (hostname === 'localhost' || hostname === '127.0.0.1')
+            ? 'http://localhost:3000'
+            : `${httpProto}://${hostname}:3000`;
 
-    const res = await fetch(`${signalingBase}/ice-config`);
-    const { iceServers } = await res.json();
-    iceServersCache = iceServers;
-  } catch (err) {
-    console.warn('[rtc] Failed to fetch ICE config, falling back to public STUN:', err);
-    iceServersCache = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-    ];
+        const res = await fetch(`${signalingBase}/ice-config`);
+        const { iceServers } = await res.json();
+        iceServersCache = iceServers;
+      } catch (err) {
+        console.warn('[rtc] Failed to fetch ICE config, falling back to public STUN:', err);
+        iceServersCache = [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+        ];
+      }
+      return iceServersCache;
+    })();
   }
-  return iceServersCache;
+  return iceServersFetchPromise;
+}
+
+/** Call this early (e.g. on signaling connect) to warm the ICE cache. */
+export function prefetchIceServers() {
+  getIceServers();
 }
 
 
@@ -54,6 +66,9 @@ export class RtcPeer extends EventTarget {
   #isInitiator;
   #makingOffer = false;
   #ignoreOffer = false;
+
+  /** Signals that arrived before #pc was ready — replayed after connect(). */
+  #pendingSignals = [];
 
   /** @type {PeerState} */
   state = 'new';
@@ -126,6 +141,12 @@ export class RtcPeer extends EventTarget {
       });
       this.#setupChannel(ch);
     }
+
+    // Flush any signals that arrived before #pc was ready
+    for (const payload of this.#pendingSignals) {
+      await this.handleSignal(payload);
+    }
+    this.#pendingSignals = [];
   }
 
   #setupChannel(channel) {
@@ -162,7 +183,11 @@ export class RtcPeer extends EventTarget {
    * @param {object} payload
    */
   async handleSignal(payload) {
-    if (!this.#pc) return;
+    if (!this.#pc) {
+      // #pc not ready yet — buffer and replay once connect() completes
+      this.#pendingSignals.push(payload);
+      return;
+    }
     try {
       if (payload.type === 'sdp') {
 

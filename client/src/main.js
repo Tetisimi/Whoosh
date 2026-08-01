@@ -4,7 +4,7 @@
  */
 
 import { SignalingClient } from './signaling.js';
-import { RtcPeer } from './rtc.js';
+import { RtcPeer, prefetchIceServers } from './rtc.js';
 import { TransferManager } from './transfer.js';
 import { RadarUI } from './ui/radar.js';
 import { PairingUI } from './ui/pairing.js';
@@ -118,6 +118,9 @@ signaling.on('registered', ({ id, localPeers }) => {
   radar.setLocalId(id);
   setStatus('connected', '● Connected');
 
+  // Warm the ICE/TURN cache immediately so it's ready before any peer connects
+  prefetchIceServers();
+
   for (const peer of localPeers) {
     peerMeta.set(peer.id, peer);
     radar.addPeer(peer);
@@ -228,6 +231,20 @@ function createPeer(peerId, initiator) {
   peer.on('state-change', ({ state }) => {
     if (state === 'failed' || state === 'disconnected') {
       radar.updatePeer({ id: peerId }, state);
+    }
+    if (state === 'failed') {
+      // Auto-retry once — cleans up the failed peer and renegotiates
+      console.warn(`[app] Peer ${peerId} failed — retrying in 1s`);
+      setTimeout(() => {
+        if (!peers.has(peerId)) return; // already cleaned up
+        peers.get(peerId)?.close();
+        peers.delete(peerId);
+        transferManagers.delete(peerId);
+        if (peerMeta.has(peerId)) {
+          const shouldInitiate = localPeerId < peerId;
+          initiatePeerConnection(peerId, shouldInitiate);
+        }
+      }, 1000);
     }
   });
 
