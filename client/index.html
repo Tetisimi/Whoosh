@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+
+    <meta name="description" content="Whoosh — instant peer-to-peer file transfer in your browser. No accounts, no uploads, files never leave your device." />
+    <meta name="theme-color" content="#0f1117" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Whoosh" />
+
+    <!-- Open Graph -->
+    <meta property="og:title" content="Whoosh — P2P File Transfer" />
+    <meta property="og:description" content="Instant browser-to-browser file transfer. Encrypted, private, no accounts." />
+    <meta property="og:type" content="website" />
+
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+    <link rel="stylesheet" href="/style.css" />
+    <title>Whoosh — P2P File Transfer</title>
+  </head>
+  <body>
+
+    <!-- ── App Shell ───────────────────────────────────────────────── -->
+    <div id="app">
+
+      <!-- Header -->
+      <header class="app-header">
+        <div class="header-logo">
+          <span class="logo-icon">💨</span>
+          <span class="logo-text">Whoosh</span>
+        </div>
+        <div class="header-right">
+          <div class="e2ee-badge" title="Direct P2P WebRTC DTLS 256-bit Encryption">🔒 E2E Encrypted</div>
+          <div id="status-badge" class="status-badge" data-state="connecting">○ Connecting…</div>
+          <div class="self-info">
+            <span class="self-label">You are</span>
+            <span id="self-codename" class="self-codename">…</span>
+          </div>
+        </div>
+
+      </header>
+
+      <!-- Main layout -->
+      <main class="app-main">
+
+        <!-- Left: Radar + actions -->
+        <section class="radar-section">
+          <div id="radar-container" class="radar-container"></div>
+
+          <div class="radar-hint">
+            <p>Devices on your network appear automatically.</p>
+            <p>Tap a device to send files, or pair across networks below.</p>
+          </div>
+
+          <!-- Hidden File Input for iOS/Browser compatibility -->
+          <input type="file" id="global-file-input" multiple style="display:none" />
+
+          <!-- Dropzone: File / Media -->
+          <div id="dropzone" class="dropzone" role="button" tabindex="0"
+               aria-label="Drop files here or click to send File / Media">
+            <div class="dropzone-inner">
+              <span class="dropzone-icon">📁</span>
+              <span class="dropzone-label">File / Media</span>
+              <span class="dropzone-sub">Drop files here or click to browse</span>
+            </div>
+          </div>
+
+          <!-- Paste action button -->
+          <button id="paste-btn" class="btn btn--ghost btn--wide paste-action-btn">
+            <span class="btn-icon">📋</span> Paste from Clipboard
+          </button>
+
+
+
+
+          <!-- Text send -->
+          <div class="text-send-row">
+            <textarea id="text-input" class="text-input"
+              placeholder="Type a message to send…"
+              rows="2" maxlength="4096"></textarea>
+            <button id="text-send-btn" class="btn btn--primary btn--icon-only" aria-label="Send message">
+              ↑
+            </button>
+          </div>
+
+          <!-- Pairing action slot -->
+          <div id="pairing-actions" class="pairing-actions"></div>
+        </section>
+
+        <!-- Right: Tabbed panel -->
+        <aside class="side-panel">
+          <nav class="tab-nav">
+            <button class="tab-btn tab-btn--active" data-tab="transfers">
+              Transfers
+            </button>
+            <button class="tab-btn" data-tab="history">
+              History
+              <span id="history-badge" class="history-badge" style="display:none"></span>
+            </button>
+          </nav>
+
+          <div class="tab-content">
+            <div id="tab-transfers" class="tab-panel-page tab-panel-page--active">
+              <div id="transfers-panel"></div>
+            </div>
+            <div id="tab-history" class="tab-panel-page">
+              <div id="history-panel"></div>
+            </div>
+          </div>
+        </aside>
+
+      </main>
+
+    <input type="file" id="global-file-input" multiple style="display: none;" />
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+
+
+</html>

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="14" fill="#0a0c12"/>
+  <!-- Whoosh speed lines (stylized wind) -->
+  <path d="M12 22 Q28 18 52 24" stroke="#3ecfcf" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.5"/>
+  <path d="M8 32 Q28 26 56 32" stroke="#3ecfcf" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M12 42 Q28 46 52 40" stroke="#3ecfcf" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.5"/>
+  <!-- Arrowhead -->
+  <path d="M48 26 L56 32 L48 38" stroke="#3ecfcf" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>
