@@ -1,29 +1,25 @@
 /**
- * transfer.js — Ultra-reliable WebRTC binary file transfer engine.
+ * transfer.js — PairDrop-inspired ultra-fast WebRTC binary transfer engine.
  *
- * Designed for 100% stability across all mobile (iOS Safari/Android) and desktop browsers.
- *
- * Protocol:
+ * Architecture (matches PairDrop & Snapdrop):
  *  - Control messages (JSON strings): transfer-start, transfer-done, transfer-cancel, text-message
- *  - Binary chunks: 36B ASCII UUID + 4B LE Uint32 chunkIndex + payload
+ *  - File data (Raw ArrayBuffers): Zero-header raw binary chunks streamed directly over RTCDataChannel.
+ *  - Ordered & reliable DataChannel ensures 100% sequential, zero-copy packet arrival.
+ *  - Event-driven backpressure flow control prevents SCTP buffer drops.
  */
 
 import { generateUUID } from './utils/uuid.js';
 
-const CHUNK_SIZE        = 128 * 1024;   // 128 KB — 2× fewer iterations vs 64 KB; safe on all modern browsers
-const BUFFER_HIGH       = 8 * 1024 * 1024; // 8 MB pipeline — saturates 100Mbps-1Gbps Direct P2P WiFi
-const BUFFER_LOW        = 1024 * 1024;  // 1 MB low watermark — resumes immediately when buffer opens
-const PREFETCH          = 16;           // 16 × 128 KB = 2 MB parallel disk read-ahead
-const PROGRESS_INTERVAL = 80;           // Emit at most 12 UI updates/sec (≈ 60fps equivalent)
-const DRAIN_POLL_MS     = 5;            // Fast 5ms check to resume sending immediately when buffer drains
-const SPEED_WINDOW_MS   = 2000;         // 2-second rolling window for stable speed readings
+const CHUNK_SIZE        = 64 * 1024;      // 64 KB — PairDrop/Snapdrop standard SCTP chunk size
+const BUFFER_HIGH       = 1024 * 1024;   // 1 MB high watermark
+const BUFFER_LOW        = 256 * 1024;    // 256 KB low watermark
+const PREFETCH          = 16;            // Read-ahead 16 chunks (1 MB) in parallel with sending
+const PROGRESS_INTERVAL = 80;            // Throttle UI DOM progress updates to 12/sec
+const SPEED_WINDOW_MS   = 1500;          // 1.5s rolling speed window
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-/**
- * Manage sending/receiving transfers for a single peer connection.
- */
 export class TransferManager extends EventTarget {
   /** @type {import('./rtc.js').RtcPeer} */
   #peer;
@@ -63,6 +59,8 @@ export class TransferManager extends EventTarget {
         cancelled: false,
         startTime: Date.now(),
         bytesSent: 0,
+        lastActualSent: 0,
+        bytesInWindow: 0,
         speedSamples: [],
       };
 
@@ -70,7 +68,7 @@ export class TransferManager extends EventTarget {
       this.#sendQueue.push(state);
       ids.push(transferId);
 
-      // Announce to receiver immediately — all files show up on both UIs at once
+      // Announce transfer start metadata
       this.#sendJSON({
         type: 'transfer-start',
         transferId,
@@ -106,14 +104,7 @@ export class TransferManager extends EventTarget {
   async #pumpChunks(state) {
     const { transferId, file, chunkCount } = state;
 
-    // Pre-compute the 40-byte packet header ONCE per transfer.
-    // This eliminates a 36-iteration char loop from the hot send path.
-    const headerTemplate = new Uint8Array(40);
-    encoder.encodeInto(transferId.padEnd(36).slice(0, 36), headerTemplate);
-    // bytes 36-39 (chunkIndex uint32) are overwritten per-chunk inside packChunk()
-
-    // Bounded read-ahead: start up to PREFETCH slice().arrayBuffer() Promises ahead.
-    // By the time we need each chunk, it’s usually already resolved — eliminates disk stalls.
+    // Parallel Disk I/O Read-Ahead: Keep up to PREFETCH chunkPromises in flight
     const reads = new Map();
     const fillReadAhead = () => {
       const limit = Math.min(chunkCount, state.nextChunk + PREFETCH);
@@ -130,22 +121,26 @@ export class TransferManager extends EventTarget {
     while (state.nextChunk < chunkCount && !state.cancelled) {
       fillReadAhead();
 
+      // PairDrop backpressure check: pause if DataChannel buffer exceeds high watermark
       if (this.#peer.bufferedAmount > BUFFER_HIGH) {
         await this.#waitForBufferDrain(state);
         if (state.cancelled) break;
       }
 
       const arrayBuffer = await reads.get(state.nextChunk);
-      reads.delete(state.nextChunk - 1); // evict previous chunk, keep window moving
+      reads.delete(state.nextChunk);
       if (state.cancelled) break;
 
-      const ok = this.#peer.send(packChunk(headerTemplate, state.nextChunk, arrayBuffer));
-      if (!ok) { await sleep(5); continue; }
+      // PairDrop Direct Binary Send: Send raw ArrayBuffer directly without header overhead
+      const ok = this.#peer.send(arrayBuffer);
+      if (!ok) {
+        await sleep(2);
+        continue;
+      }
 
       state.bytesSent += arrayBuffer.byteLength;
       state.nextChunk++;
 
-      // Throttle progress DOM updates — no more than 12/sec
       const now = Date.now();
       if (now - lastProgressAt >= PROGRESS_INTERVAL) {
         lastProgressAt = now;
@@ -156,45 +151,43 @@ export class TransferManager extends EventTarget {
     reads.clear();
 
     if (!state.cancelled) {
-      this.#emitSendProgress(state, Date.now()); // fire final 100% event
+      this.#emitSendProgress(state, Date.now());
       this.#sendJSON({ type: 'transfer-done', transferId });
       this.dispatchEvent(new CustomEvent('send-done', { detail: { transferId, fileName: file.name } }));
     }
     this.#sending.delete(transferId);
   }
 
-  // Compute and dispatch a send-progress event.
   #emitSendProgress(state, now = Date.now()) {
     const actualSent = Math.max(0, state.bytesSent - this.#peer.bufferedAmount);
-    
-    // Track incremental progress window for smooth speed calculation
-    const delta = actualSent - (state.lastActualSent ?? 0);
+    const delta = actualSent - state.lastActualSent;
     if (delta > 0) {
       state.lastActualSent = actualSent;
-      state.bytesInWindow = (state.bytesInWindow ?? 0) + delta;
+      state.bytesInWindow += delta;
       state.speedSamples.push({ t: now, bytes: delta });
     }
     while (state.speedSamples.length > 0 && now - state.speedSamples[0].t > SPEED_WINDOW_MS) {
       state.bytesInWindow -= state.speedSamples.shift().bytes;
     }
-    const speed = (state.bytesInWindow ?? 0) / (SPEED_WINDOW_MS / 1000);
+    const speed = (state.bytesInWindow / SPEED_WINDOW_MS) * 1000;
 
     this.dispatchEvent(new CustomEvent('send-progress', {
-      detail: { transferId: state.transferId, bytesSent: actualSent, totalBytes: state.file.size, speedBps: Math.max(0, speed) },
+      detail: {
+        transferId: state.transferId,
+        bytesSent: actualSent,
+        totalBytes: state.file.size,
+        speedBps: Math.max(0, speed),
+      },
     }));
   }
 
-  // Waits until the DataChannel buffer drains below BUFFER_LOW.
-  // • Uses native bufferedamountlow event for instant wakeup.
-  // • Fast 5ms poll guarantees maximum 5ms resume latency if event is missed/unsupported.
-  // • UI progress updates remain throttled to PROGRESS_INTERVAL (80ms).
-  // • Checks state.cancelled to abort within 5ms if cancelled.
-  // • 3s hard cap prevents infinite hang on dead connections.
+  // Event-driven backpressure drain (PairDrop / Snapdrop strategy)
   #waitForBufferDrain(state) {
     if (this.#peer.bufferedAmount <= BUFFER_LOW) return Promise.resolve();
-    return new Promise(resolve => {
+    return new Promise((resolve) => {
       let settled = false;
       let lastProgress = 0;
+
       const done = () => {
         if (!settled) {
           settled = true;
@@ -203,7 +196,10 @@ export class TransferManager extends EventTarget {
           resolve();
         }
       };
+
       this.#peer.addEventListener('bufferedamountlow', done);
+
+      // Micro-poll fallback to ensure instant resume if event is missed
       const poll = setInterval(() => {
         const now = Date.now();
         if (now - lastProgress >= PROGRESS_INTERVAL) {
@@ -211,7 +207,8 @@ export class TransferManager extends EventTarget {
           this.#emitSendProgress(state, now);
         }
         if (state.cancelled || this.#peer.bufferedAmount <= BUFFER_LOW) done();
-      }, DRAIN_POLL_MS);
+      }, 5);
+
       setTimeout(done, 3000);
     });
   }
@@ -228,11 +225,6 @@ export class TransferManager extends EventTarget {
     this.#receiving.clear();
   }
 
-
-  /**
-   * Cancel an outgoing transfer.
-   * @param {string} transferId
-   */
   cancelSend(transferId) {
     const state = this.#sending.get(transferId);
     if (state) {
@@ -243,10 +235,6 @@ export class TransferManager extends EventTarget {
     }
   }
 
-  /**
-   * Cancel an incoming transfer.
-   * @param {string} transferId
-   */
   cancelReceive(transferId) {
     const state = this.#receiving.get(transferId);
     if (state) {
@@ -256,11 +244,6 @@ export class TransferManager extends EventTarget {
     }
   }
 
-  /**
-   * Resume an interrupted outgoing transfer from the last chunk.
-   * @param {string} transferId
-   * @param {number} fromChunk
-   */
   resumeSend(transferId, fromChunk) {
     const state = this.#sending.get(transferId);
     if (!state) return;
@@ -268,10 +251,6 @@ export class TransferManager extends EventTarget {
     this.#pumpChunks(state);
   }
 
-  /**
-   * Send a text message.
-   * @param {string} text
-   */
   sendText(text) {
     const id = generateUUID();
     this.#sendJSON({ type: 'text-message', id, text });
@@ -290,20 +269,19 @@ export class TransferManager extends EventTarget {
       }
 
       switch (msg.type) {
-        case 'transfer-start':    this.#onTransferStart(msg); break;
-        case 'transfer-done':     this.#onTransferDone(msg); break;
-        case 'transfer-cancel':   this.#onTransferCancel(msg); break;
-        case 'text-message':      this.#onTextMessage(msg); break;
-        case 'resume-request':    this.#onResumeRequest(msg); break;
-        case 'nak':               this.#onNak(msg); break;
+        case 'transfer-start':  this.#onTransferStart(msg); break;
+        case 'transfer-done':   this.#onTransferDone(msg); break;
+        case 'transfer-cancel': this.#onTransferCancel(msg); break;
+        case 'text-message':    this.#onTextMessage(msg); break;
+        case 'resume-request':  this.#onResumeRequest(msg); break;
+        case 'nak':             this.#onNak(msg); break;
       }
       return;
     }
 
-    // Direct binary ArrayBuffer packet
+    // PairDrop Direct Receive: Pure raw ArrayBuffer stored zero-copy into active transfer chunks
     if (data instanceof ArrayBuffer) {
-      const { transferId, chunkIndex, data: chunkData } = unpackBinaryChunk(data);
-      this.#onBinaryChunk(transferId, chunkIndex, chunkData);
+      this.#onBinaryChunk(data);
     }
   }
 
@@ -316,9 +294,9 @@ export class TransferManager extends EventTarget {
       chunkCount: msg.chunkCount,
       chunks: new Array(msg.chunkCount),
       receivedCount: 0,
-      lastChunkIndex: -1,
       startTime: Date.now(),
       bytesReceived: 0,
+      bytesInWindow: 0,
       speedSamples: [],
     };
     this.#receiving.set(msg.transferId, state);
@@ -328,34 +306,35 @@ export class TransferManager extends EventTarget {
     }));
   }
 
-  #onBinaryChunk(transferId, chunkIndex, chunkData) {
-    let state = this.#receiving.get(transferId);
-    if (!state) {
-      const clean = transferId.trim();
-      state = this.#receiving.get(clean);
-    }
-    if (!state && this.#receiving.size > 0) {
+  #onBinaryChunk(arrayBuffer) {
+    // Find active receiving state (files sent sequentially)
+    let state = null;
+    if (this.#receiving.size === 1) {
+      state = this.#receiving.values().next().value;
+    } else {
       for (const s of this.#receiving.values()) {
-        if (s.receivedCount < s.chunkCount) { state = s; break; }
+        if (s.receivedCount < s.chunkCount) {
+          state = s;
+          break;
+        }
       }
     }
     if (!state) return;
 
-    // chunkData is a zero-copy Uint8Array view — no memcopy needed
-    state.chunks[chunkIndex] = chunkData;
+    // Zero-copy store raw ArrayBuffer chunk into array
+    state.chunks[state.receivedCount] = arrayBuffer;
     state.receivedCount++;
-    state.bytesReceived += chunkData.byteLength;
+    state.bytesReceived += arrayBuffer.byteLength;
 
-    // Running-window speed: O(1) amortised via shift-from-front
     const now = Date.now();
-    state.bytesInWindow = (state.bytesInWindow ?? 0) + chunkData.byteLength;
-    state.speedSamples.push({ t: now, bytes: chunkData.byteLength });
+    state.bytesInWindow += arrayBuffer.byteLength;
+    state.speedSamples.push({ t: now, bytes: arrayBuffer.byteLength });
+
     while (state.speedSamples.length > 0 && now - state.speedSamples[0].t > SPEED_WINDOW_MS) {
       state.bytesInWindow -= state.speedSamples.shift().bytes;
     }
-    const speed = (state.bytesInWindow ?? 0) / (SPEED_WINDOW_MS / 1000);
+    const speed = (state.bytesInWindow / SPEED_WINDOW_MS) * 1000;
 
-    // Throttle receive-progress events — same cap as send side
     if (!state.lastProgressAt || now - state.lastProgressAt >= PROGRESS_INTERVAL) {
       state.lastProgressAt = now;
       this.dispatchEvent(new CustomEvent('receive-progress', {
@@ -378,7 +357,7 @@ export class TransferManager extends EventTarget {
     }
     if (!state) return;
 
-    // Assemble all chunks into a Blob
+    // PairDrop Blob Assembly
     const blob = new Blob(state.chunks, { type: state.fileType || 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
 
@@ -413,13 +392,15 @@ export class TransferManager extends EventTarget {
     this.dispatchEvent(new CustomEvent('text-message', { detail: { id: msg.id, text: msg.text } }));
   }
 
+  #onResumeRequest(msg) {
+    this.resumeSend(msg.transferId, msg.fromChunk);
+  }
+
   #onNak(msg) {
     this.dispatchEvent(new CustomEvent('transfer-error', {
       detail: { transferId: msg.transferId, message: msg.message },
     }));
   }
-
-  // ── Helpers ────────────────────────────────────────────────────────────────
 
   #sendJSON(obj) {
     this.#peer.send(JSON.stringify(obj));
@@ -429,27 +410,6 @@ export class TransferManager extends EventTarget {
     this.addEventListener(type, (e) => handler(e.detail));
     return this;
   }
-}
-
-// ── Binary Packet Helpers ───────────────────────────────────────────────────
-
-// Pack a chunk using a pre-computed header template (UUID already encoded).
-// Only the chunkIndex bytes (36-39) differ per chunk, so we overwrite just those.
-function packChunk(headerTemplate, chunkIndex, chunkArrayBuffer) {
-  const packet = new Uint8Array(40 + chunkArrayBuffer.byteLength);
-  packet.set(headerTemplate, 0);                                    // copy pre-computed UUID
-  new DataView(packet.buffer).setUint32(36, chunkIndex, true);      // overwrite bytes 36-39
-  packet.set(new Uint8Array(chunkArrayBuffer), 40);
-  return packet.buffer;
-}
-
-// Unpack a received binary chunk.
-// Uses TextDecoder (no char loop) + zero-copy Uint8Array view (no payload memcopy).
-function unpackBinaryChunk(arrayBuffer) {
-  const transferId = decoder.decode(new Uint8Array(arrayBuffer, 0, 36)).trim();
-  const chunkIndex = new DataView(arrayBuffer, 36, 4).getUint32(0, true);
-  const data       = new Uint8Array(arrayBuffer, 40); // zero-copy view — saves copying the whole chunk
-  return { transferId, chunkIndex, data };
 }
 
 function sleep(ms) {
