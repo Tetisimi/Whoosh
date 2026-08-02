@@ -151,11 +151,42 @@ export class TransferManager extends EventTarget {
     reads.clear();
 
     if (!state.cancelled) {
-      this.#emitSendProgress(state, Date.now());
-      this.#sendJSON({ type: 'transfer-done', transferId });
-      this.dispatchEvent(new CustomEvent('send-done', { detail: { transferId, fileName: file.name } }));
+      // 1. Wait until all buffered bytes have actually left the sender's network socket
+      await this.#waitForBufferEmpty();
+      if (!state.cancelled) {
+        this.#emitSendProgress(state, Date.now());
+        // 2. Notify receiver that all chunks are sent
+        this.#sendJSON({ type: 'transfer-done', transferId });
+        // 3. Wait for receiver to acknowledge file assembly (with 5s fallback safety cap)
+        await this.#waitForAck(transferId);
+        this.dispatchEvent(new CustomEvent('send-done', { detail: { transferId, fileName: file.name } }));
+      }
     }
     this.#sending.delete(transferId);
+  }
+
+  // Wait until local DataChannel buffer is completely empty (0 bytes in flight)
+  #waitForBufferEmpty() {
+    if (this.#peer.bufferedAmount === 0) return Promise.resolve();
+    return new Promise(resolve => {
+      const poll = setInterval(() => {
+        if (this.#peer.bufferedAmount === 0) {
+          clearInterval(poll);
+          resolve();
+        }
+      }, 10);
+      setTimeout(() => { clearInterval(poll); resolve(); }, 10000);
+    });
+  }
+
+  // Wait for transfer-ack from receiver
+  #waitForAck(transferId) {
+    const state = this.#sending.get(transferId);
+    if (!state || state.acked) return Promise.resolve();
+    return new Promise(resolve => {
+      state.ackResolver = resolve;
+      setTimeout(resolve, 5000); // 5s fallback timeout
+    });
   }
 
   #emitSendProgress(state, now = Date.now()) {
@@ -271,6 +302,7 @@ export class TransferManager extends EventTarget {
       switch (msg.type) {
         case 'transfer-start':  this.#onTransferStart(msg); break;
         case 'transfer-done':   this.#onTransferDone(msg); break;
+        case 'transfer-ack':    this.#onTransferAck(msg); break;
         case 'transfer-cancel': this.#onTransferCancel(msg); break;
         case 'text-message':    this.#onTextMessage(msg); break;
         case 'resume-request':  this.#onResumeRequest(msg); break;
@@ -361,6 +393,9 @@ export class TransferManager extends EventTarget {
     const blob = new Blob(state.chunks, { type: state.fileType || 'application/octet-stream' });
     const url = URL.createObjectURL(blob);
 
+    // Send bi-directional ACK to sender so sender UI completes synchronously
+    this.#sendJSON({ type: 'transfer-ack', transferId: state.transferId });
+
     this.dispatchEvent(new CustomEvent('receive-done', {
       detail: {
         transferId: state.transferId,
@@ -372,6 +407,14 @@ export class TransferManager extends EventTarget {
     }));
 
     this.#receiving.delete(state.transferId);
+  }
+
+  #onTransferAck(msg) {
+    const state = this.#sending.get(msg.transferId);
+    if (state) {
+      state.acked = true;
+      state.ackResolver?.();
+    }
   }
 
   #onTransferCancel(msg) {

@@ -87,6 +87,14 @@ export class RadarUI {
    * @param {{ id: string, codename: string }} peer
    */
   addPeer(peer) {
+    // Purge any existing peer entry with the same codename to avoid duplicate icons
+    for (const [id, entry] of this.#peerEls.entries()) {
+      if (entry.meta.codename === peer.codename && id !== peer.id) {
+        entry.el.remove();
+        this.#peerEls.delete(id);
+      }
+    }
+
     if (this.#peerEls.has(peer.id)) {
       this.updatePeer(peer);
       return;
