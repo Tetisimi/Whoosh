@@ -326,9 +326,12 @@ body {
 
 .radar-avatar--peer:active { transform: scale(0.96); }
 
+.radar-avatar[data-state="connecting"] { border-color: var(--border); opacity: 0.55; cursor: default; }
+.radar-avatar[data-state="connecting"]:hover { transform: none; box-shadow: var(--shadow-sm); border-color: var(--border); }
 .radar-avatar[data-state="connected"]  { border-color: var(--green); box-shadow: 0 0 10px var(--green-dim); }
 .radar-avatar[data-state="verified"]   { border-color: var(--accent); box-shadow: 0 0 14px var(--accent-glow); }
-.radar-avatar[data-state="failed"]     { border-color: var(--red); }
+.radar-avatar[data-state="failed"]     { border-color: var(--red); opacity: 0.4; cursor: default; }
+.radar-avatar[data-state="failed"]:hover { transform: none; box-shadow: var(--shadow-sm); }
 
 /* Send/receive flash */
 @keyframes flash-send    { 0%,100%{box-shadow:var(--shadow-sm)} 50%{box-shadow:0 0 20px var(--accent),var(--shadow-md)} }
@@ -336,7 +339,7 @@ body {
 .radar-avatar--send    { animation: flash-send 1.5s ease; }
 .radar-avatar--receive { animation: flash-receive 1.5s ease; }
 
-/* Ping dot */
+/* Ping dot — only visible when connected */
 .radar-peer-ping {
   position: absolute;
   bottom: 2px;
@@ -346,6 +349,12 @@ body {
   background: var(--green);
   border-radius: 50%;
   border: 1.5px solid var(--bg-surface);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.radar-avatar[data-state="connected"] .radar-peer-ping,
+.radar-avatar[data-state="verified"] .radar-peer-ping {
+  opacity: 1;
 }
 
 .avatar-icon { font-size: 1.3rem; line-height: 1; }

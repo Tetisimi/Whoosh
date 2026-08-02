@@ -102,7 +102,7 @@ export class RadarUI {
     el.className = 'radar-peer';
     el.dataset.peerId = peer.id;
     el.innerHTML = `
-      <div class="radar-avatar radar-avatar--peer" title="${peer.codename}">
+      <div class="radar-avatar radar-avatar--peer" data-state="connecting" title="${peer.codename} — connecting…">
         <span class="avatar-icon">${getPeerIcon(peer.codename)}</span>
         <div class="radar-peer-ping"></div>
       </div>
@@ -144,7 +144,13 @@ export class RadarUI {
     const entry = this.#peerEls.get(peer.id);
     if (!entry) return;
     if (state) {
-      entry.el.querySelector('.radar-avatar').dataset.state = state;
+      const av = entry.el.querySelector('.radar-avatar');
+      av.dataset.state = state;
+      if (state === 'connected') {
+        av.title = entry.meta.codename + ' — tap to send';
+      } else if (state === 'failed') {
+        av.title = entry.meta.codename + ' — connection failed';
+      }
     }
   }
 

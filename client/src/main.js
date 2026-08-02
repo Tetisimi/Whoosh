@@ -177,7 +177,10 @@ signaling.on('room-joined', ({ code, members }) => {
     if (!peerMeta.has(member.id)) {
       peerMeta.set(member.id, member);
       radar.addPeer(member);
-      initiatePeerConnection(member.id, true);
+      // Use the same ID-comparison logic as LAN discovery so both sides
+      // independently agree on who is initiator — avoids offer collisions.
+      const shouldInitiate = localPeerId < member.id;
+      initiatePeerConnection(member.id, shouldInitiate);
     }
   }
 });
@@ -233,18 +236,25 @@ function createPeer(peerId, initiator) {
       radar.updatePeer({ id: peerId }, state);
     }
     if (state === 'failed') {
-      // Auto-retry once — cleans up the failed peer and renegotiates
-      console.warn(`[app] Peer ${peerId} failed — retrying in 1s`);
+      // Auto-retry up to 2 times to avoid infinite loops
+      const retryCount = (peer._retryCount ?? 0) + 1;
+      if (retryCount > 2) {
+        console.warn(`[app] Peer ${peerId} failed after ${retryCount} attempts — giving up`);
+        return;
+      }
+      console.warn(`[app] Peer ${peerId} failed — retry attempt ${retryCount}`);
       setTimeout(() => {
-        if (!peers.has(peerId)) return; // already cleaned up
+        if (!peers.has(peerId)) return;
         peers.get(peerId)?.close();
         peers.delete(peerId);
         transferManagers.delete(peerId);
         if (peerMeta.has(peerId)) {
           const shouldInitiate = localPeerId < peerId;
-          initiatePeerConnection(peerId, shouldInitiate);
+          // Pass retry count through so next peer instance knows its attempt #
+          const newPeer = createPeer(peerId, shouldInitiate);
+          newPeer._retryCount = retryCount;
         }
-      }, 1000);
+      }, 1500 * retryCount); // back off: 1.5s, 3s
     }
   });
 
@@ -397,6 +407,7 @@ async function traverseEntry(entry, path = '') {
     const reader = entry.createReader();
     const entries = await new Promise((resolve) => reader.readEntries(resolve));
     const childPromises = entries.map((child) => traverseEntry(child, path ? `${path}/${entry.name}` : entry.name));
+    const childFiles = await Promise.all(childPromises);
     return childFiles.flat();
   }
   return [];
@@ -425,6 +436,10 @@ textInput.addEventListener('keydown', (e) => {
 // ── Peer click → send files ───────────────────────────────────────────────────
 
 function handlePeerClick(peerId, peerName) {
+  if (!peers.get(peerId)?.isOpen) {
+    showToast(`Connecting to ${peerName}… try again in a moment.`);
+    return;
+  }
   openFilePicker(peerId);
 }
 
@@ -432,7 +447,10 @@ function handlePeerClick(peerId, peerName) {
 
 function sendFilesToPeer(peerId, files) {
   const mgr = transferManagers.get(peerId);
-  if (!mgr) return showToast('Peer not connected yet. Try again in a moment.');
+  if (!mgr || !peers.get(peerId)?.isOpen) {
+    showToast('Peer not connected yet — wait a moment and try again.');
+    return;
+  }
   radar.flashPeer(peerId, 'send');
   mgr.sendFiles(files);
 }
