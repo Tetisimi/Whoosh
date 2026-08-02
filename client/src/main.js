@@ -92,9 +92,12 @@ const pairing = new PairingUI(pairingContainer, {
 });
 
 const transfersUI = new TransfersUI(transfersPanel, (transferId) => {
-  for (const mgr of transferManagers.values()) {
+  // Cancel on this device
+  for (const [peerId, mgr] of transferManagers) {
     mgr.cancelSend(transferId);
     mgr.cancelReceive(transferId);
+    // Relay cancel via WebSocket — bypasses a frozen DataChannel
+    signaling.signal(peerId, { type: 'transfer-cancel', transferId });
   }
 });
 
@@ -166,6 +169,16 @@ signaling.on('peer-left', ({ id }) => {
 
 
 signaling.on('signal', ({ from, payload }) => {
+  // Out-of-band transfer cancel — relayed via WebSocket, bypasses frozen DataChannel
+  if (payload.type === 'transfer-cancel') {
+    const mgr = transferManagers.get(from);
+    if (mgr) {
+      mgr.cancelSend(payload.transferId);
+      mgr.cancelReceive(payload.transferId);
+    }
+    return;
+  }
+
   let peer = peers.get(from);
   if (!peer) {
     peer = createPeer(from, false);

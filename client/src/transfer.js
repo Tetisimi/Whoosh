@@ -10,9 +10,9 @@
 
 import { generateUUID } from './utils/uuid.js';
 
-const CHUNK_SIZE = 128 * 1024; // 128 KB chunk size
-const BUFFER_THRESHOLD = 4 * 1024 * 1024; // 4 MB flow buffer threshold
-const PREFETCH_WINDOW = 16; // Pre-read 16 chunks (2 MB) in parallel with sending
+const CHUNK_SIZE = 64 * 1024;           // 64 KB – proven stable on all browsers/mobile
+const BUFFER_HIGH = 256 * 1024;         // Pause sending when buffer exceeds 256 KB
+const BUFFER_LOW  = 64 * 1024;          // Resume when buffer drains to 64 KB (matches bufferedAmountLowThreshold)
 const SPEED_WINDOW_MS = 1000;
 
 const encoder = new TextEncoder();
@@ -57,7 +57,6 @@ export class TransferManager extends EventTarget {
         file,
         chunkCount,
         nextChunk: 0,
-        ackedChunks: new Set(),
         cancelled: false,
         startTime: Date.now(),
         bytesSent: 0,
@@ -68,7 +67,7 @@ export class TransferManager extends EventTarget {
       this.#sendQueue.push(state);
       ids.push(transferId);
 
-      // Announce the transfer to receiver immediately so it appears on receiver UI
+      // Announce to receiver immediately — all files show up on both UIs at once
       this.#sendJSON({
         type: 'transfer-start',
         transferId,
@@ -103,103 +102,57 @@ export class TransferManager extends EventTarget {
 
   async #pumpChunks(state) {
     const { transferId, file, chunkCount } = state;
-    const prefetchBuffer = new Map();
-
-    // Async pre-reader to keep disk I/O ahead of network send
-    const prefetchNext = async (fromIndex) => {
-      const tasks = [];
-      for (let i = fromIndex; i < Math.min(chunkCount, fromIndex + PREFETCH_WINDOW); i++) {
-        if (!prefetchBuffer.has(i)) {
-          const start = i * CHUNK_SIZE;
-          const slice = file.slice(start, start + CHUNK_SIZE);
-          tasks.push(
-            slice.arrayBuffer().then((buf) => {
-              prefetchBuffer.set(i, buf);
-            })
-          );
-        }
-      }
-      await Promise.all(tasks);
-    };
 
     while (state.nextChunk < chunkCount && !state.cancelled) {
-      // Keep prefetch buffer full in background
-      prefetchNext(state.nextChunk);
-
-      // Flow control: wait if native C++ buffer threshold is reached
-      if (this.#peer.bufferedAmount > BUFFER_THRESHOLD && !state.cancelled) {
-        await this.#waitForBufferLow();
+      // Tight high/low watermark flow control — prevents huge buffer buildup
+      if (this.#peer.bufferedAmount > BUFFER_HIGH) {
+        await this.#waitForBufferDrain();
+        if (state.cancelled) break;
       }
+
+      const start = state.nextChunk * CHUNK_SIZE;
+      const arrayBuffer = await file.slice(start, start + CHUNK_SIZE).arrayBuffer();
       if (state.cancelled) break;
 
-      // Get pre-read ArrayBuffer or read on demand if prefetch missed
-      let arrayBuffer = prefetchBuffer.get(state.nextChunk);
-      if (!arrayBuffer) {
-        const start = state.nextChunk * CHUNK_SIZE;
-        arrayBuffer = await file.slice(start, start + CHUNK_SIZE).arrayBuffer();
-      }
-      prefetchBuffer.delete(state.nextChunk);
-
-      // Pack and send binary packet
-      const binaryPacket = packBinaryChunk(transferId, state.nextChunk, arrayBuffer);
-      const ok = this.#peer.send(binaryPacket);
-
-      if (!ok) {
-        await sleep(5);
-        continue;
-      }
+      const ok = this.#peer.send(packBinaryChunk(transferId, state.nextChunk, arrayBuffer));
+      if (!ok) { await sleep(5); continue; }
 
       state.bytesSent += arrayBuffer.byteLength;
       state.nextChunk++;
 
-      // Track wire progress (actual bytes sent out of local memory)
-      const buffered = this.#peer.bufferedAmount;
-      const actualBytesSent = Math.max(0, state.bytesSent - buffered);
-
+      // Progress uses actual bytes leaving the buffer, not enqueued bytes
+      const actualSent = Math.max(0, state.bytesSent - this.#peer.bufferedAmount);
       const now = Date.now();
-      state.speedSamples.push({ t: now, bytes: actualBytesSent });
-      state.speedSamples = state.speedSamples.filter((s) => now - s.t < SPEED_WINDOW_MS);
-
-      const firstSample = state.speedSamples[0];
-      const lastSample = state.speedSamples[state.speedSamples.length - 1];
-      const timeDiffSec = (lastSample.t - firstSample.t) / 1000;
-      const bytesDiff = lastSample ? lastSample.bytes - (firstSample ? firstSample.bytes : 0) : 0;
-      const speed = timeDiffSec > 0 ? bytesDiff / timeDiffSec : 0;
+      state.speedSamples.push({ t: now, bytes: actualSent });
+      state.speedSamples = state.speedSamples.filter(s => now - s.t < SPEED_WINDOW_MS);
+      const first = state.speedSamples[0];
+      const last  = state.speedSamples[state.speedSamples.length - 1];
+      const dt = (last.t - first.t) / 1000;
+      const speed = dt > 0 ? (last.bytes - first.bytes) / dt : 0;
 
       this.dispatchEvent(new CustomEvent('send-progress', {
-        detail: {
-          transferId,
-          bytesSent: actualBytesSent,
-          totalBytes: file.size,
-          chunkIndex: state.nextChunk - 1,
-          chunkCount,
-          speedBps: Math.max(0, speed),
-        },
+        detail: { transferId, bytesSent: actualSent, totalBytes: file.size, speedBps: Math.max(0, speed) },
       }));
     }
-
-    prefetchBuffer.clear();
 
     if (!state.cancelled) {
       this.#sendJSON({ type: 'transfer-done', transferId });
       this.dispatchEvent(new CustomEvent('send-done', { detail: { transferId, fileName: file.name } }));
     }
-
     this.#sending.delete(transferId);
   }
 
-  #waitForBufferLow() {
-    if (this.#peer.bufferedAmount <= BUFFER_THRESHOLD / 2) return Promise.resolve();
-    return new Promise((resolve) => {
-      let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
-        this.#peer.off?.('bufferedamountlow', finish);
-        resolve();
-      };
-      this.#peer.on('bufferedamountlow', finish);
-      setTimeout(finish, 25);
+  // Waits until the DataChannel buffer drains below the low watermark
+  #waitForBufferDrain() {
+    if (this.#peer.bufferedAmount <= BUFFER_LOW) return Promise.resolve();
+    return new Promise(resolve => {
+      let settled = false;
+      const done = () => { if (!settled) { settled = true; this.#peer.off?.('bufferedamountlow', done); resolve(); } };
+      this.#peer.on('bufferedamountlow', done);
+      // Fallback: poll every 20ms in case the event doesn't fire (iOS quirk)
+      const poll = setInterval(() => { if (this.#peer.bufferedAmount <= BUFFER_LOW) { clearInterval(poll); done(); } }, 20);
+      // Hard cap at 3s to prevent infinite hang
+      setTimeout(() => { clearInterval(poll); done(); }, 3000);
     });
   }
 

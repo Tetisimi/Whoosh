@@ -194,7 +194,7 @@ export class RtcPeer extends EventTarget {
   #setupChannel(channel) {
     this.#channel = channel;
     channel.binaryType = 'arraybuffer';
-    channel.bufferedAmountLowThreshold = 128 * 1024; // 128 KB threshold
+    channel.bufferedAmountLowThreshold = 64 * 1024; // Must match BUFFER_LOW in transfer.js
 
     channel.addEventListener('bufferedamountlow', () => {
       this.dispatchEvent(new CustomEvent('bufferedamountlow'));
