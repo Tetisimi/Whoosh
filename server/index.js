@@ -105,7 +105,7 @@ async function getIceServers() {
 
 // ── HTTP server (also serves /ice-config for TURN credentials) ────────────────
 
-const httpServer = createServer((req, res) => {
+const httpServer = createServer(async (req, res) => {
   // Dynamic CORS: allow CLIENT_ORIGIN + any LAN IP origin
   const origin = req.headers.origin ?? '';
   const isAllowedOrigin =
