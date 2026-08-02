@@ -274,6 +274,15 @@ export class RtcPeer extends EventTarget {
     return this;
   }
 
+  /**
+   * Remove a typed event listener added with on().
+   * Note: the handler reference must be the same function passed to on().
+   */
+  off(type, handler) {
+    this.removeEventListener(type, handler);
+    return this;
+  }
+
   /** Close the peer connection. */
   close() {
     this.#channel?.close();

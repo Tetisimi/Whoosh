@@ -10,7 +10,7 @@
  * mode this file is replaced. In 'injectManifest' mode this is the base file.
  */
 
-const CACHE_NAME = 'whoosh-shell-v1';
+const CACHE_NAME = 'whoosh-shell-v2'; // bump this to bust cache on deploy
 const FONT_CACHE = 'whoosh-fonts-v1';
 
 // Files to precache (Vite will inject the actual hashed filenames via workbox)
@@ -68,14 +68,15 @@ self.addEventListener('fetch', (event) => {
   // WebSocket / signaling server: don't intercept
   if (url.protocol === 'ws:' || url.protocol === 'wss:') return;
 
-  // App shell: cache-first
-  if (request.destination === 'document' || SHELL_ASSETS.includes(url.pathname)) {
-    event.respondWith(cacheFirst(request, CACHE_NAME));
+  // App shell HTML: network-first so deploys are picked up immediately,
+  // falling back to cache only when offline.
+  if (request.destination === 'document') {
+    event.respondWith(networkFirst(request, CACHE_NAME));
     return;
   }
 
-  // JS/CSS/images: cache-first
-  if (['script', 'style', 'image', 'font'].includes(request.destination)) {
+  // Hashed JS/CSS/images: cache-first (hash changes when content changes)
+  if (SHELL_ASSETS.includes(url.pathname) || ['script', 'style', 'image', 'font'].includes(request.destination)) {
     event.respondWith(cacheFirst(request, CACHE_NAME));
   }
 });
@@ -121,6 +122,20 @@ async function cacheFirst(request, cacheName) {
     return response;
   } catch {
     return new Response('Offline', { status: 503 });
+  }
+}
+
+async function networkFirst(request, cacheName) {
+  try {
+    const response = await fetch(request);
+    if (response.ok) {
+      const cache = await caches.open(cacheName);
+      cache.put(request, response.clone());
+    }
+    return response;
+  } catch {
+    const cached = await caches.match(request);
+    return cached ?? new Response('Offline', { status: 503 });
   }
 }
 
