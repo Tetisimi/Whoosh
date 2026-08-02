@@ -8,8 +8,11 @@ import { formatBytes } from '../utils/storage.js';
 export class TransfersUI {
   /** @type {HTMLElement} */
   #panel;
+  /** Map<transferId, HTMLElement> */
+  #items = new Map();
   /** Map<peerId, mode> */
   #peerModes = new Map();
+  #onCancel = null;
 
   constructor(panelEl, onCancel = null) {
     this.#panel = panelEl;
