@@ -10,8 +10,9 @@
 
 import { generateUUID } from './utils/uuid.js';
 
-const CHUNK_SIZE = 128 * 1024; // 128 KB (optimal chunk size for WebRTC throughput)
-const BUFFER_THRESHOLD = 2 * 1024 * 1024; // 2 MB pipeline buffer threshold
+const CHUNK_SIZE = 128 * 1024; // 128 KB chunk size
+const BUFFER_THRESHOLD = 4 * 1024 * 1024; // 4 MB flow buffer threshold
+const PREFETCH_WINDOW = 16; // Pre-read 16 chunks (2 MB) in parallel with sending
 const SPEED_WINDOW_MS = 1000;
 
 const encoder = new TextEncoder();
@@ -102,31 +103,56 @@ export class TransferManager extends EventTarget {
 
   async #pumpChunks(state) {
     const { transferId, file, chunkCount } = state;
+    const prefetchBuffer = new Map();
+
+    // Async pre-reader to keep disk I/O ahead of network send
+    const prefetchNext = async (fromIndex) => {
+      const tasks = [];
+      for (let i = fromIndex; i < Math.min(chunkCount, fromIndex + PREFETCH_WINDOW); i++) {
+        if (!prefetchBuffer.has(i)) {
+          const start = i * CHUNK_SIZE;
+          const slice = file.slice(start, start + CHUNK_SIZE);
+          tasks.push(
+            slice.arrayBuffer().then((buf) => {
+              prefetchBuffer.set(i, buf);
+            })
+          );
+        }
+      }
+      await Promise.all(tasks);
+    };
 
     while (state.nextChunk < chunkCount && !state.cancelled) {
-      // Zero-latency flow control: if buffer fills up, wait for native C++ 'bufferedamountlow' event
+      // Keep prefetch buffer full in background
+      prefetchNext(state.nextChunk);
+
+      // Flow control: wait if native C++ buffer threshold is reached
       if (this.#peer.bufferedAmount > BUFFER_THRESHOLD && !state.cancelled) {
-        await this.#waitForBufferLow(state);
+        await this.#waitForBufferLow();
       }
       if (state.cancelled) break;
 
-      const start = state.nextChunk * CHUNK_SIZE;
-      const slice = file.slice(start, start + CHUNK_SIZE);
-      const arrayBuffer = await slice.arrayBuffer();
+      // Get pre-read ArrayBuffer or read on demand if prefetch missed
+      let arrayBuffer = prefetchBuffer.get(state.nextChunk);
+      if (!arrayBuffer) {
+        const start = state.nextChunk * CHUNK_SIZE;
+        arrayBuffer = await file.slice(start, start + CHUNK_SIZE).arrayBuffer();
+      }
+      prefetchBuffer.delete(state.nextChunk);
 
-      // Send raw binary packet
+      // Pack and send binary packet
       const binaryPacket = packBinaryChunk(transferId, state.nextChunk, arrayBuffer);
       const ok = this.#peer.send(binaryPacket);
 
       if (!ok) {
-        await sleep(10);
+        await sleep(5);
         continue;
       }
 
       state.bytesSent += arrayBuffer.byteLength;
       state.nextChunk++;
 
-      // Track actual wire progress by subtracting current buffer queue
+      // Track wire progress (actual bytes sent out of local memory)
       const buffered = this.#peer.bufferedAmount;
       const actualBytesSent = Math.max(0, state.bytesSent - buffered);
 
@@ -152,6 +178,8 @@ export class TransferManager extends EventTarget {
       }));
     }
 
+    prefetchBuffer.clear();
+
     if (!state.cancelled) {
       this.#sendJSON({ type: 'transfer-done', transferId });
       this.dispatchEvent(new CustomEvent('send-done', { detail: { transferId, fileName: file.name } }));
@@ -160,17 +188,18 @@ export class TransferManager extends EventTarget {
     this.#sending.delete(transferId);
   }
 
-  #waitForBufferLow(state) {
+  #waitForBufferLow() {
+    if (this.#peer.bufferedAmount <= BUFFER_THRESHOLD / 2) return Promise.resolve();
     return new Promise((resolve) => {
-      const onLow = () => {
-        this.#peer.off?.('bufferedamountlow', onLow);
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        this.#peer.off?.('bufferedamountlow', finish);
         resolve();
       };
-      this.#peer.on('bufferedamountlow', onLow);
-      setTimeout(() => {
-        this.#peer.off?.('bufferedamountlow', onLow);
-        resolve();
-      }, 80);
+      this.#peer.on('bufferedamountlow', finish);
+      setTimeout(finish, 25);
     });
   }
 
