@@ -5,16 +5,17 @@
  *
  * Protocol:
  *  - Control messages (JSON strings): transfer-start, transfer-done, transfer-cancel, text-message
- *  - File Chunks (Raw ArrayBuffers): 36B transferId UUID + 4B Uint32 chunkIndex + 64KB raw binary payload
+ *  - Binary chunks: 36B ASCII UUID + 4B LE Uint32 chunkIndex + payload
  */
 
 import { generateUUID } from './utils/uuid.js';
 
-const CHUNK_SIZE    = 64 * 1024;         // 64 KB — safe on all browsers including iOS Safari
-const BUFFER_HIGH   = 2 * 1024 * 1024;  // 2 MB pipeline — keeps Direct P2P saturated
-const BUFFER_LOW    = 256 * 1024;        // Resume after draining to 256 KB
-const PREFETCH      = 8;                 // Read 8 chunks (512 KB) ahead to overlap disk I/O
-const SPEED_WINDOW_MS = 1000;
+const CHUNK_SIZE        = 128 * 1024;   // 128 KB — 2× fewer iterations vs 64 KB; safe on all modern browsers
+const BUFFER_HIGH       = 1024 * 1024;  // 1 MB pipeline — keeps Direct P2P saturated
+const BUFFER_LOW        = 256 * 1024;   // Resume sending when buffer drains to 256 KB
+const PREFETCH          = 8;            // 8 × 128 KB = 1 MB parallel disk read-ahead
+const PROGRESS_INTERVAL = 80;           // Emit at most 12 UI updates/sec (≈ 60fps equivalent)
+const SPEED_WINDOW_MS   = 2000;         // 2-second rolling window for stable speed readings
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -103,10 +104,16 @@ export class TransferManager extends EventTarget {
 
   async #pumpChunks(state) {
     const { transferId, file, chunkCount } = state;
-    // Bounded read-ahead: keep up to PREFETCH chunks pre-read as Promises.
-    // This overlaps disk I/O with network I/O, eliminating per-chunk stalls.
-    const reads = new Map(); // index -> Promise<ArrayBuffer>
 
+    // Pre-compute the 40-byte packet header ONCE per transfer.
+    // This eliminates a 36-iteration char loop from the hot send path.
+    const headerTemplate = new Uint8Array(40);
+    encoder.encodeInto(transferId.padEnd(36).slice(0, 36), headerTemplate);
+    // bytes 36-39 (chunkIndex uint32) are overwritten per-chunk inside packChunk()
+
+    // Bounded read-ahead: start up to PREFETCH slice().arrayBuffer() Promises ahead.
+    // By the time we need each chunk, it’s usually already resolved — eliminates disk stalls.
+    const reads = new Map();
     const fillReadAhead = () => {
       const limit = Math.min(chunkCount, state.nextChunk + PREFETCH);
       for (let i = state.nextChunk; i < limit; i++) {
@@ -117,61 +124,84 @@ export class TransferManager extends EventTarget {
       }
     };
 
+    let lastProgressAt = 0;
+
     while (state.nextChunk < chunkCount && !state.cancelled) {
-      // Kick off background reads before checking flow control
       fillReadAhead();
 
-      // Flow control: drain the DataChannel buffer before adding more
       if (this.#peer.bufferedAmount > BUFFER_HIGH) {
-        await this.#waitForBufferDrain();
+        await this.#waitForBufferDrain(state);
         if (state.cancelled) break;
       }
 
-      // Await the pre-read chunk (usually already resolved)
       const arrayBuffer = await reads.get(state.nextChunk);
-      reads.delete(state.nextChunk - 1); // evict chunk we no longer need
+      reads.delete(state.nextChunk - 1); // evict previous chunk, keep window moving
       if (state.cancelled) break;
 
-      const ok = this.#peer.send(packBinaryChunk(transferId, state.nextChunk, arrayBuffer));
+      const ok = this.#peer.send(packChunk(headerTemplate, state.nextChunk, arrayBuffer));
       if (!ok) { await sleep(5); continue; }
 
       state.bytesSent += arrayBuffer.byteLength;
       state.nextChunk++;
 
-      // Report progress based on actual bytes on the wire (not just enqueued)
-      const actualSent = Math.max(0, state.bytesSent - this.#peer.bufferedAmount);
+      // Throttle progress DOM updates — no more than 12/sec
       const now = Date.now();
-      state.speedSamples.push({ t: now, bytes: actualSent });
-      state.speedSamples = state.speedSamples.filter(s => now - s.t < SPEED_WINDOW_MS);
-      const first = state.speedSamples[0];
-      const last  = state.speedSamples[state.speedSamples.length - 1];
-      const dt = (last.t - first.t) / 1000;
-      const speed = dt > 0 ? (last.bytes - first.bytes) / dt : 0;
-
-      this.dispatchEvent(new CustomEvent('send-progress', {
-        detail: { transferId, bytesSent: actualSent, totalBytes: file.size, speedBps: Math.max(0, speed) },
-      }));
+      if (now - lastProgressAt >= PROGRESS_INTERVAL) {
+        lastProgressAt = now;
+        this.#emitSendProgress(state, now);
+      }
     }
 
     reads.clear();
 
     if (!state.cancelled) {
+      this.#emitSendProgress(state, Date.now()); // fire final 100% event
       this.#sendJSON({ type: 'transfer-done', transferId });
       this.dispatchEvent(new CustomEvent('send-done', { detail: { transferId, fileName: file.name } }));
     }
     this.#sending.delete(transferId);
   }
 
+  // Compute and dispatch a send-progress event.
+  #emitSendProgress(state, now = Date.now()) {
+    const actualSent = Math.max(0, state.bytesSent - this.#peer.bufferedAmount);
+    state.speedSamples.push({ t: now, bytes: actualSent });
+    // Trim old samples from the front — O(1) amortised, no array allocation
+    while (state.speedSamples.length > 1 && now - state.speedSamples[0].t > SPEED_WINDOW_MS) {
+      state.speedSamples.shift();
+    }
+    const first = state.speedSamples[0];
+    const last  = state.speedSamples[state.speedSamples.length - 1];
+    const dt    = (last.t - first.t) / 1000;
+    const speed = dt > 0.05 ? (last.bytes - first.bytes) / dt : 0;
+    this.dispatchEvent(new CustomEvent('send-progress', {
+      detail: { transferId: state.transferId, bytesSent: actualSent, totalBytes: state.file.size, speedBps: Math.max(0, speed) },
+    }));
+  }
+
   // Waits until the DataChannel buffer drains below BUFFER_LOW.
-  // Uses event + 20ms polling fallback (iOS doesn't always fire bufferedamountlow).
-  // Hard 3s cap prevents infinite hang on dead connections.
-  #waitForBufferDrain() {
+  // • Uses the native bufferedamountlow event (no wrapping — so removeEventListener works).
+  // • Polls every PROGRESS_INTERVAL ms as iOS fallback AND to emit live progress during drain.
+  // • Checks state.cancelled so cancel is acted on within PROGRESS_INTERVAL ms, not 3s.
+  // • 3s hard cap prevents infinite hang on dead connections.
+  #waitForBufferDrain(state) {
     if (this.#peer.bufferedAmount <= BUFFER_LOW) return Promise.resolve();
     return new Promise(resolve => {
       let settled = false;
-      const done = () => { if (!settled) { settled = true; clearInterval(poll); this.#peer.off?.('bufferedamountlow', done); resolve(); } };
-      this.#peer.on('bufferedamountlow', done);
-      const poll = setInterval(() => { if (this.#peer.bufferedAmount <= BUFFER_LOW) done(); }, 20);
+      const done = () => {
+        if (!settled) {
+          settled = true;
+          clearInterval(poll);
+          this.#peer.removeEventListener('bufferedamountlow', done);
+          resolve();
+        }
+      };
+      // Direct addEventListener so the exact same reference can be removed
+      this.#peer.addEventListener('bufferedamountlow', done);
+      const poll = setInterval(() => {
+        this.#emitSendProgress(state); // keep UI alive during drain (critical for TURN relay)
+        if (state.cancelled || this.#peer.bufferedAmount <= BUFFER_LOW) done();
+      }, PROGRESS_INTERVAL);
       setTimeout(done, 3000);
     });
   }
@@ -254,7 +284,6 @@ export class TransferManager extends EventTarget {
         case 'transfer-done':     this.#onTransferDone(msg); break;
         case 'transfer-cancel':   this.#onTransferCancel(msg); break;
         case 'text-message':      this.#onTextMessage(msg); break;
-        case 'ack':               this.#onAck(msg); break;
         case 'resume-request':    this.#onResumeRequest(msg); break;
         case 'nak':               this.#onNak(msg); break;
       }
@@ -289,7 +318,7 @@ export class TransferManager extends EventTarget {
     }));
   }
 
-  #onBinaryChunk(transferId, chunkIndex, arrayBuffer) {
+  #onBinaryChunk(transferId, chunkIndex, chunkData) {
     let state = this.#receiving.get(transferId);
     if (!state) {
       const clean = transferId.trim();
@@ -297,35 +326,39 @@ export class TransferManager extends EventTarget {
     }
     if (!state && this.#receiving.size > 0) {
       for (const s of this.#receiving.values()) {
-        if (s.receivedCount < s.chunkCount) {
-          state = s;
-          break;
-        }
+        if (s.receivedCount < s.chunkCount) { state = s; break; }
       }
     }
     if (!state) return;
 
-    state.chunks[chunkIndex] = arrayBuffer;
+    // chunkData is a zero-copy Uint8Array view — no memcopy needed
+    state.chunks[chunkIndex] = chunkData;
     state.receivedCount++;
-    state.lastChunkIndex = chunkIndex;
-    state.bytesReceived += arrayBuffer.byteLength;
+    state.bytesReceived += chunkData.byteLength;
 
-    // Speed tracking
+    // Running-window speed: O(1) amortised via shift-from-front
     const now = Date.now();
-    state.speedSamples.push({ t: now, bytes: arrayBuffer.byteLength });
-    state.speedSamples = state.speedSamples.filter((s) => now - s.t < SPEED_WINDOW_MS);
-    const speed = state.speedSamples.reduce((a, s) => a + s.bytes, 0) / (SPEED_WINDOW_MS / 1000);
+    state.bytesInWindow = (state.bytesInWindow ?? 0) + chunkData.byteLength;
+    state.speedSamples.push({ t: now, bytes: chunkData.byteLength });
+    while (state.speedSamples.length > 0 && now - state.speedSamples[0].t > SPEED_WINDOW_MS) {
+      state.bytesInWindow -= state.speedSamples.shift().bytes;
+    }
+    const speed = (state.bytesInWindow ?? 0) / (SPEED_WINDOW_MS / 1000);
 
-    this.dispatchEvent(new CustomEvent('receive-progress', {
-      detail: {
-        transferId: state.transferId,
-        bytesReceived: state.bytesReceived,
-        totalBytes: state.fileSize,
-        receivedCount: state.receivedCount,
-        chunkCount: state.chunkCount,
-        speedBps: speed,
-      },
-    }));
+    // Throttle receive-progress events — same cap as send side
+    if (!state.lastProgressAt || now - state.lastProgressAt >= PROGRESS_INTERVAL) {
+      state.lastProgressAt = now;
+      this.dispatchEvent(new CustomEvent('receive-progress', {
+        detail: {
+          transferId: state.transferId,
+          bytesReceived: state.bytesReceived,
+          totalBytes: state.fileSize,
+          receivedCount: state.receivedCount,
+          chunkCount: state.chunkCount,
+          speedBps: speed,
+        },
+      }));
+    }
   }
 
   #onTransferDone(msg) {
@@ -370,15 +403,6 @@ export class TransferManager extends EventTarget {
     this.dispatchEvent(new CustomEvent('text-message', { detail: { id: msg.id, text: msg.text } }));
   }
 
-  #onAck(msg) {
-    const state = this.#sending.get(msg.transferId);
-    if (state) state.ackedChunks.add(msg.chunkIndex);
-  }
-
-  #onResumeRequest(msg) {
-    this.resumeSend(msg.transferId, msg.fromChunk);
-  }
-
   #onNak(msg) {
     this.dispatchEvent(new CustomEvent('transfer-error', {
       detail: { transferId: msg.transferId, message: msg.message },
@@ -399,38 +423,22 @@ export class TransferManager extends EventTarget {
 
 // ── Binary Packet Helpers ───────────────────────────────────────────────────
 
-function packBinaryChunk(transferId, chunkIndex, chunkArrayBuffer) {
-  const headerLen = 40;
-  const packet = new Uint8Array(headerLen + chunkArrayBuffer.byteLength);
-
-  // Bytes 0..35: UUID string ASCII
-  const cleanId = (transferId || '').padEnd(36, ' ').slice(0, 36);
-  for (let i = 0; i < 36; i++) {
-    packet[i] = cleanId.charCodeAt(i);
-  }
-
-  // Bytes 36..39: Uint32 chunkIndex
-  const view = new DataView(packet.buffer);
-  view.setUint32(36, chunkIndex, true);
-
-  // Bytes 40..end: File chunk binary payload
-  packet.set(new Uint8Array(chunkArrayBuffer), headerLen);
+// Pack a chunk using a pre-computed header template (UUID already encoded).
+// Only the chunkIndex bytes (36-39) differ per chunk, so we overwrite just those.
+function packChunk(headerTemplate, chunkIndex, chunkArrayBuffer) {
+  const packet = new Uint8Array(40 + chunkArrayBuffer.byteLength);
+  packet.set(headerTemplate, 0);                                    // copy pre-computed UUID
+  new DataView(packet.buffer).setUint32(36, chunkIndex, true);      // overwrite bytes 36-39
+  packet.set(new Uint8Array(chunkArrayBuffer), 40);
   return packet.buffer;
 }
 
+// Unpack a received binary chunk.
+// Uses TextDecoder (no char loop) + zero-copy Uint8Array view (no payload memcopy).
 function unpackBinaryChunk(arrayBuffer) {
-  const headerLen = 40;
-  const bytes = new Uint8Array(arrayBuffer, 0, 36);
-  let transferId = '';
-  for (let i = 0; i < 36; i++) {
-    transferId += String.fromCharCode(bytes[i]);
-  }
-  transferId = transferId.trim();
-
-  const view = new DataView(arrayBuffer);
-  const chunkIndex = view.getUint32(36, true);
-  const data = arrayBuffer.slice(headerLen);
-
+  const transferId = decoder.decode(new Uint8Array(arrayBuffer, 0, 36)).trim();
+  const chunkIndex = new DataView(arrayBuffer, 36, 4).getUint32(0, true);
+  const data       = new Uint8Array(arrayBuffer, 40); // zero-copy view — saves copying the whole chunk
   return { transferId, chunkIndex, data };
 }
 

@@ -130,7 +130,7 @@ export class RtcPeer extends EventTarget {
   /** Start the connection. Must call this after construction. */
   async connect() {
     const iceServers = await getIceServers();
-    this.#pc = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle' });
+    this.#pc = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 });
 
     this.#pc.addEventListener('icecandidate', ({ candidate }) => {
       if (candidate) {
