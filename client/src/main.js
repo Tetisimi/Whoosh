@@ -189,6 +189,16 @@ signaling.on('room-error', ({ message }) => {
   pairing.showJoinError(message);
 });
 
+signaling.on('reconnecting', ({ attempt }) => {
+  if (attempt === 1) {
+    setStatus('connecting', '◌ Connecting…');
+  } else if (attempt <= 3) {
+    setStatus('connecting', '◌ Server waking up…');
+  } else {
+    setStatus('connecting', '◌ Waking up (~30s on free tier)');
+  }
+});
+
 signaling.on('disconnected', () => {
   setStatus('disconnected', '○ Disconnected');
 });

@@ -142,8 +142,13 @@ body {
 }
 
 .status-badge[data-state="connected"]    { color: var(--green); border-color: rgba(34,197,94,0.3); }
-.status-badge[data-state="connecting"]   { color: var(--amber); }
+.status-badge[data-state="connecting"]   { color: var(--amber); animation: status-pulse 1.5s ease-in-out infinite; }
 .status-badge[data-state="disconnected"] { color: var(--red); }
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
 
 .self-info {
   display: flex;

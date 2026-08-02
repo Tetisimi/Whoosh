@@ -15,6 +15,7 @@
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
+const CONNECT_TIMEOUT_MS = 10_000; // give up on a single attempt after 10s
 
 export class SignalingClient extends EventTarget {
   /** @type {WebSocket | null} */
@@ -23,7 +24,9 @@ export class SignalingClient extends EventTarget {
   #codename;
   #reconnectDelay = RECONNECT_BASE_MS;
   #reconnectTimer = null;
+  #connectTimeoutTimer = null;
   #intentionalClose = false;
+  #attemptCount = 0;
 
   /** Assigned by server after registration */
   peerId = null;
@@ -42,13 +45,28 @@ export class SignalingClient extends EventTarget {
 
   #connect() {
     this.#intentionalClose = false;
+    this.#attemptCount++;
+
+    // Notify UI that we're attempting to connect
+    this.dispatchEvent(new CustomEvent('reconnecting', { detail: { attempt: this.#attemptCount } }));
+
     const ws = new WebSocket(this.#url);
     ws.binaryType = 'arraybuffer';
     this.#ws = ws;
 
+    // Fail fast if the server doesn't respond — Render free tier can be slow to wake
+    this.#connectTimeoutTimer = setTimeout(() => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        console.log(`[signaling] Connect attempt ${this.#attemptCount} timed out — retrying`);
+        ws.close();
+      }
+    }, CONNECT_TIMEOUT_MS);
+
     ws.addEventListener('open', () => {
       console.log('[signaling] Connected');
+      clearTimeout(this.#connectTimeoutTimer);
       this.#reconnectDelay = RECONNECT_BASE_MS;
+      this.#attemptCount = 0;
       // Register immediately on connection
       this.#rawSend({ type: 'register', codename: this.#codename });
     });
@@ -165,6 +183,7 @@ export class SignalingClient extends EventTarget {
   close() {
     this.#intentionalClose = true;
     clearTimeout(this.#reconnectTimer);
+    clearTimeout(this.#connectTimeoutTimer);
     this.#ws?.close();
   }
 
