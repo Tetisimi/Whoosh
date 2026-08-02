@@ -41,6 +41,68 @@ import {
 const PORT = process.env.PORT ?? 3000;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN ?? 'http://localhost:5173';
 
+// ── ICE / TURN credential cache ───────────────────────────────────────────────
+// Metered issues short-lived credentials via their API. We cache them for
+// 5 minutes so each /ice-config request doesn’t hammer Metered.
+let _iceCache = null;
+let _iceCachedAt = 0;
+const ICE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function getIceServers() {
+  if (_iceCache && Date.now() - _iceCachedAt < ICE_CACHE_TTL_MS) {
+    return _iceCache;
+  }
+
+  const base = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+  ];
+
+  // Option 1: fetch fresh short-lived credentials from the Metered API.
+  // Requires METERED_API_KEY + METERED_APP_NAME env vars on Render.
+  const apiKey = process.env.METERED_API_KEY;
+  const appName = process.env.METERED_APP_NAME;
+  if (apiKey && appName) {
+    try {
+      const url = `https://${appName}.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const turnServers = await res.json();
+        _iceCache = [...base, ...turnServers];
+        _iceCachedAt = Date.now();
+        console.log(`[ice] Fetched ${turnServers.length} TURN servers from Metered API`);
+        return _iceCache;
+      }
+      console.warn('[ice] Metered API returned', res.status);
+    } catch (err) {
+      console.warn('[ice] Metered API fetch failed:', err.message);
+    }
+  }
+
+  // Option 2: METERED_TURN env var set as a JSON ICE-servers array (legacy).
+  const meteredTurnJson = process.env.METERED_TURN;
+  if (meteredTurnJson) {
+    try {
+      const parsed = JSON.parse(meteredTurnJson);
+      const servers = Array.isArray(parsed) ? parsed : parsed.iceServers ?? [];
+      if (servers.length) {
+        _iceCache = [...base, ...servers.filter((s) => s.urls)];
+        _iceCachedAt = Date.now();
+        console.log('[ice] Using METERED_TURN env var ICE servers');
+        return _iceCache;
+      }
+    } catch (err) {
+      console.warn('[ice] Failed to parse METERED_TURN env var:', err.message);
+    }
+  }
+
+  // Fallback: STUN only (works on same-network, fails cross-network).
+  console.warn('[ice] No TURN configured — falling back to STUN only');
+  _iceCache = base;
+  _iceCachedAt = Date.now();
+  return _iceCache;
+}
+
 // ── HTTP server (also serves /ice-config for TURN credentials) ────────────────
 
 const httpServer = createServer((req, res) => {
@@ -69,42 +131,7 @@ const httpServer = createServer((req, res) => {
 
   if (req.url === '/ice-config' && req.method === 'GET') {
     // Expose TURN credentials to client without embedding them in JS bundles.
-    // If you're using Metered's API, fetch credentials dynamically here.
-    // For now, return static credentials from env vars.
-    const iceServers = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-    ];
-
-    const meteredApiKey = process.env.METERED_API_KEY;
-    const meteredApp = process.env.METERED_APP_NAME;
-
-    if (meteredApiKey && meteredApp) {
-      // Metered.ca TURN servers with short-lived credentials
-      iceServers.push(
-        {
-          urls: `turn:${meteredApp}.metered.ca:80`,
-          username: process.env.METERED_USERNAME ?? 'whoosh',
-          credential: meteredApiKey,
-        },
-        {
-          urls: `turn:${meteredApp}.metered.ca:80?transport=tcp`,
-          username: process.env.METERED_USERNAME ?? 'whoosh',
-          credential: meteredApiKey,
-        },
-        {
-          urls: `turn:${meteredApp}.metered.ca:443`,
-          username: process.env.METERED_USERNAME ?? 'whoosh',
-          credential: meteredApiKey,
-        },
-        {
-          urls: `turns:${meteredApp}.metered.ca:443?transport=tcp`,
-          username: process.env.METERED_USERNAME ?? 'whoosh',
-          credential: meteredApiKey,
-        },
-      );
-    }
-
+    const iceServers = await getIceServers();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ iceServers }));
     return;
