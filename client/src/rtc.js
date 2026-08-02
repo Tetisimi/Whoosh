@@ -73,6 +73,9 @@ async function getIceServers() {
       iceServersCache = servers || [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
       ];
       return iceServersCache;
     })();
@@ -334,9 +337,11 @@ export class RtcPeer extends EventTarget {
     try {
       const stats = await this.#pc.getStats();
       for (const report of stats.values()) {
-        if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+        if (report.type === 'candidate-pair' && (report.state === 'succeeded' || report.nominated)) {
           const localCand = stats.get(report.localCandidateId);
-          const mode = localCand?.candidateType === 'relay' ? 'relayed' : 'direct';
+          const remoteCand = stats.get(report.remoteCandidateId);
+          const isRelayed = localCand?.candidateType === 'relay' || remoteCand?.candidateType === 'relay';
+          const mode = isRelayed ? 'relayed' : 'direct';
           if (mode !== this.connectionMode) {
             this.connectionMode = mode;
             this.dispatchEvent(new CustomEvent('mode-change', { detail: { mode } }));

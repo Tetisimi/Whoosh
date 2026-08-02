@@ -257,19 +257,18 @@ function normalizeIp(rawIp) {
 function handleRegister(ws, id, rawIp, codename) {
   const ip = normalizeIp(rawIp);
 
-  // Evict any ghost connection with the same IP + codename (e.g. after a reconnect).
-  // Without this, a device that briefly drops sees its old self on the radar.
-  const ghosts = getLocalPeers(ip, id).filter((p) => p.codename === codename);
-  for (const ghost of ghosts) {
-    console.log(`[ws] Evicting ghost peer ${ghost.id} (${ghost.codename}) — replaced by ${id}`);
-    peers.delete(ghost.id);
-    removeFromLocalRoom(ip, ghost.id);
-    removeFromCodeRooms(ghost.id);
-    // Notify remaining peers before we evict so they don't see a stale entry
-    for (const remaining of getLocalPeers(ip, ghost.id)) {
-      send(remaining.ws, { type: 'peer-left', id: ghost.id });
+  // Evict any ghost connection with the same codename anywhere in the system
+  for (const [existingId, existingPeer] of peers.entries()) {
+    if (existingPeer.codename === codename && existingId !== id) {
+      console.log(`[ws] Evicting ghost peer ${existingId} (${codename}) — replaced by ${id}`);
+      peers.delete(existingId);
+      removeFromLocalRoom(existingPeer.ip, existingId);
+      removeFromCodeRooms(existingId);
+      for (const p of peers.values()) {
+        send(p.ws, { type: 'peer-left', id: existingId });
+      }
+      try { existingPeer.ws.terminate(); } catch { /* */ }
     }
-    ghost.ws.terminate();
   }
 
   const peer = { id, codename, ws, ip };
