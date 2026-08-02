@@ -65,12 +65,14 @@ export class TransfersUI {
     el.querySelector('.transfer-pct').textContent = `${pct.toFixed(0)}%`;
     el.querySelector('.transfer-transferred').textContent = formatBytes(bytesTransferred);
 
-    const speed = speedBps > 0 ? formatBytes(speedBps) + '/s' : '—';
+    const speed = speedBps > 0 ? formatBytes(speedBps) + '/s' : '0 B/s';
     el.querySelector('.transfer-speed').textContent = speed;
 
     if (speedBps > 0 && totalBytes > bytesTransferred) {
       const etaSec = (totalBytes - bytesTransferred) / speedBps;
-      el.querySelector('.transfer-eta').textContent = `ETA ${formatEta(etaSec)}`;
+      el.querySelector('.transfer-eta').textContent = `• ETA ${formatEta(etaSec)}`;
+    } else {
+      el.querySelector('.transfer-eta').textContent = '';
     }
   }
 

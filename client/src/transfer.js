@@ -166,15 +166,19 @@ export class TransferManager extends EventTarget {
   // Compute and dispatch a send-progress event.
   #emitSendProgress(state, now = Date.now()) {
     const actualSent = Math.max(0, state.bytesSent - this.#peer.bufferedAmount);
-    state.speedSamples.push({ t: now, bytes: actualSent });
-    // Trim old samples from the front — O(1) amortised, no array allocation
-    while (state.speedSamples.length > 1 && now - state.speedSamples[0].t > SPEED_WINDOW_MS) {
-      state.speedSamples.shift();
+    
+    // Track incremental progress window for smooth speed calculation
+    const delta = actualSent - (state.lastActualSent ?? 0);
+    if (delta > 0) {
+      state.lastActualSent = actualSent;
+      state.bytesInWindow = (state.bytesInWindow ?? 0) + delta;
+      state.speedSamples.push({ t: now, bytes: delta });
     }
-    const first = state.speedSamples[0];
-    const last  = state.speedSamples[state.speedSamples.length - 1];
-    const dt    = (last.t - first.t) / 1000;
-    const speed = dt > 0.05 ? (last.bytes - first.bytes) / dt : 0;
+    while (state.speedSamples.length > 0 && now - state.speedSamples[0].t > SPEED_WINDOW_MS) {
+      state.bytesInWindow -= state.speedSamples.shift().bytes;
+    }
+    const speed = (state.bytesInWindow ?? 0) / (SPEED_WINDOW_MS / 1000);
+
     this.dispatchEvent(new CustomEvent('send-progress', {
       detail: { transferId: state.transferId, bytesSent: actualSent, totalBytes: state.file.size, speedBps: Math.max(0, speed) },
     }));
