@@ -69,6 +69,8 @@ export class RtcPeer extends EventTarget {
 
   /** Signals that arrived before #pc was ready — replayed after connect(). */
   #pendingSignals = [];
+  /** ICE candidates that arrived before remoteDescription was set. */
+  #pendingCandidates = [];
 
   /** @type {PeerState} */
   state = 'new';
@@ -103,6 +105,11 @@ export class RtcPeer extends EventTarget {
 
     this.#pc.addEventListener('iceconnectionstatechange', () => {
       this.#detectConnectionMode();
+      const state = this.#pc.iceConnectionState;
+      if (state === 'failed') {
+        console.warn(`[rtc] ICE connection failed with ${this.#remoteId} — attempting ICE restart`);
+        try { this.#pc.restartIce(); } catch { /* */ }
+      }
     });
 
     this.#pc.addEventListener('connectionstatechange', () => {
@@ -179,7 +186,7 @@ export class RtcPeer extends EventTarget {
 
   /**
    * Handle an incoming signal from the remote peer (via signaling server).
-   * Implements the "perfect negotiation" pattern.
+   * Implements standard W3C WebRTC Perfect Negotiation.
    * @param {object} payload
    */
   async handleSignal(payload) {
@@ -190,15 +197,34 @@ export class RtcPeer extends EventTarget {
     }
     try {
       if (payload.type === 'sdp') {
-
+        const isPolite = !this.#isInitiator;
         const offerCollision =
           payload.sdp.type === 'offer' &&
           (this.#makingOffer || this.#pc.signalingState !== 'stable');
 
-        this.#ignoreOffer = !this.#isInitiator && offerCollision;
+        // Impolite peer ignores offer collisions; polite peer yields and rolls back
+        this.#ignoreOffer = !isPolite && offerCollision;
         if (this.#ignoreOffer) return;
 
+        if (offerCollision && isPolite) {
+          try {
+            await this.#pc.setLocalDescription({ type: 'rollback' });
+          } catch {
+            /* older browsers auto-rollback or ignore */
+          }
+        }
+
         await this.#pc.setRemoteDescription(payload.sdp);
+
+        // Flush any ICE candidates that arrived before remoteDescription was set
+        for (const cand of this.#pendingCandidates) {
+          try {
+            await this.#pc.addIceCandidate(cand);
+          } catch (e) {
+            console.warn('[rtc] Buffered ICE candidate error:', e);
+          }
+        }
+        this.#pendingCandidates = [];
 
         if (payload.sdp.type === 'offer') {
           await this.#pc.setLocalDescription();
@@ -209,9 +235,15 @@ export class RtcPeer extends EventTarget {
         }
       } else if (payload.type === 'ice-candidate') {
         try {
-          await this.#pc.addIceCandidate(payload.candidate);
+          if (!this.#pc.remoteDescription) {
+            this.#pendingCandidates.push(payload.candidate);
+          } else {
+            await this.#pc.addIceCandidate(payload.candidate);
+          }
         } catch (err) {
-          if (!this.#ignoreOffer) throw err;
+          if (!this.#ignoreOffer) {
+            console.warn('[rtc] addIceCandidate error:', err);
+          }
         }
       }
     } catch (err) {

@@ -58,22 +58,27 @@ async function getIceServers() {
     { urls: 'stun:stun1.l.google.com:19302' },
   ];
 
-  // Option 1: fetch fresh short-lived credentials from the Metered API.
-  // Requires METERED_API_KEY + METERED_APP_NAME env vars on Render.
-  const apiKey = process.env.METERED_API_KEY;
-  const appName = process.env.METERED_APP_NAME;
+  // Option 1: fetch fresh short-lived credentials from Metered API.
+  const apiKey =
+    process.env.METERED_API_KEY ||
+    (process.env.METERED_TURN && !process.env.METERED_TURN.trim().startsWith('{') && !process.env.METERED_TURN.trim().startsWith('[') ? process.env.METERED_TURN.trim() : null) ||
+    'd3bac2fe415d4cb0cdb0d1e19dacfb11926b';
+  const appName = process.env.METERED_APP_NAME || 'whoosh';
+
   if (apiKey && appName) {
     try {
       const url = `https://${appName}.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`;
       const res = await fetch(url);
       if (res.ok) {
         const turnServers = await res.json();
-        _iceCache = [...base, ...turnServers];
-        _iceCachedAt = Date.now();
-        console.log(`[ice] Fetched ${turnServers.length} TURN servers from Metered API`);
-        return _iceCache;
+        if (Array.isArray(turnServers) && turnServers.length > 0) {
+          _iceCache = [...base, ...turnServers];
+          _iceCachedAt = Date.now();
+          console.log(`[ice] Successfully fetched ${turnServers.length} TURN servers from Metered API`);
+          return _iceCache;
+        }
       }
-      console.warn('[ice] Metered API returned', res.status);
+      console.warn('[ice] Metered API returned status:', res.status);
     } catch (err) {
       console.warn('[ice] Metered API fetch failed:', err.message);
     }
@@ -96,8 +101,7 @@ async function getIceServers() {
     }
   }
 
-  // Fallback: STUN only (works on same-network, fails cross-network).
-  console.warn('[ice] No TURN configured — falling back to STUN only');
+  console.warn('[ice] Falling back to STUN only');
   _iceCache = base;
   _iceCachedAt = Date.now();
   return _iceCache;
@@ -106,20 +110,8 @@ async function getIceServers() {
 // ── HTTP server (also serves /ice-config for TURN credentials) ────────────────
 
 const httpServer = createServer(async (req, res) => {
-  // Dynamic CORS: allow CLIENT_ORIGIN + any LAN IP origin
-  const origin = req.headers.origin ?? '';
-  const isAllowedOrigin =
-    !origin ||
-    origin === CLIENT_ORIGIN ||
-    /^https?:\/\/localhost(:\d+)?$/.test(origin) ||
-    /^https?:\/\/127\.0\.0\.1(:\d+)?$/.test(origin) ||
-    /^https?:\/\/192\.168\.\d+\.\d+(:\d+)?$/.test(origin) ||
-    /^https?:\/\/10\.\d+\.\d+\.\d+(:\d+)?$/.test(origin) ||
-    /^https?:\/\/172\.(1[6-9]|2\d|3[01])\.\d+\.\d+(:\d+)?$/.test(origin);
-
-  if (isAllowedOrigin && origin) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  }
+  // Allow all origins for HTTP API requests (/ice-config, /health)
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
