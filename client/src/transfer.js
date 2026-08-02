@@ -10,8 +10,8 @@
 
 import { generateUUID } from './utils/uuid.js';
 
-const CHUNK_SIZE = 64 * 1024; // 64 KB
-const BUFFER_THRESHOLD = 1024 * 1024; // 1 MB (high-throughput pipeline)
+const CHUNK_SIZE = 128 * 1024; // 128 KB (optimal chunk size for WebRTC throughput)
+const BUFFER_THRESHOLD = 2 * 1024 * 1024; // 2 MB pipeline buffer threshold
 const SPEED_WINDOW_MS = 1000;
 
 const encoder = new TextEncoder();

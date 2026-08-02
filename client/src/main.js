@@ -277,8 +277,8 @@ function createPeer(peerId, initiator) {
   });
 
   peer.on('mode-change', ({ mode }) => {
-    // Mode badge updated per-peer; tie to any active transfers
     console.log(`[app] Peer ${peerId} connection mode: ${mode}`);
+    transfersUI.updatePeerMode(peerId, mode);
   });
 
   peer.connect();

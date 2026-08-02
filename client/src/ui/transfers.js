@@ -163,15 +163,17 @@ export class TransfersUI {
    * @param {string} transferId
    * @param {'direct'|'relayed'|'unknown'} mode
    */
-  setConnectionMode(transferId, mode) {
-    const el = this.#items.get(transferId);
-    if (!el) return;
-    const badge = el.querySelector('.transfer-mode-badge');
-    badge.dataset.mode = mode;
-    badge.textContent = mode === 'relayed' ? '⚡ Relayed' : mode === 'direct' ? '⬤ Direct P2P' : '';
-    badge.title = mode === 'relayed'
-      ? 'Using TURN relay (NAT traversal). Slightly slower.'
-      : 'Direct peer-to-peer connection. Maximum speed.';
+  updatePeerMode(peerId, mode) {
+    for (const [, el] of this.#items) {
+      const badge = el.querySelector('.transfer-mode-badge');
+      if (badge) {
+        badge.dataset.mode = mode;
+        badge.textContent = mode === 'relayed' ? '⚡ Relayed' : mode === 'direct' ? '⬤ Direct P2P' : '';
+        badge.title = mode === 'relayed'
+          ? 'Using TURN relay. Bandwidth capped by TURN server.'
+          : 'Direct local P2P. Maximum WiFi speed!';
+      }
+    }
   }
 
   #makeItem({ transferId, fileName, fileSize, direction, peerCodename }) {
