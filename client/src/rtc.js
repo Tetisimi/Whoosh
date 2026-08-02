@@ -20,6 +20,9 @@ async function getIceServers() {
   // Deduplicate concurrent fetches
   if (!iceServersFetchPromise) {
     iceServersFetchPromise = (async () => {
+      let servers = null;
+
+      // 1. Try fetching from signaling server /ice-config
       try {
         const { protocol, hostname } = window.location;
         const httpProto = protocol === 'https:' ? 'https' : 'http';
@@ -30,15 +33,47 @@ async function getIceServers() {
             : `${httpProto}://${hostname}:3000`;
 
         const res = await fetch(`${signalingBase}/ice-config`);
-        const { iceServers } = await res.json();
-        iceServersCache = iceServers;
+        if (res.ok) {
+          const { iceServers } = await res.json();
+          if (Array.isArray(iceServers) && iceServers.length > 0) {
+            // Check if server returned real dynamic TURN credentials (not the static broken ones)
+            const hasValidTurn = iceServers.some(
+              (s) => s.urls && (s.urls.includes('standard.relay.metered.ca') || s.urls.includes('relay.metered.ca'))
+            );
+            if (hasValidTurn) {
+              servers = iceServers;
+            }
+          }
+        }
       } catch (err) {
-        console.warn('[rtc] Failed to fetch ICE config, falling back to public STUN:', err);
-        iceServersCache = [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-        ];
+        console.warn('[rtc] Server ICE config fetch error:', err);
       }
+
+      // 2. Fallback: fetch directly from Metered REST API if server output was static/broken/STUN-only
+      if (!servers) {
+        try {
+          console.log('[rtc] Fetching dynamic TURN credentials directly from Metered API…');
+          const res = await fetch('https://whoosh.metered.live/api/v1/turn/credentials?apiKey=d3bac2fe415d4cb0cdb0d1e19dacfb11926b');
+          if (res.ok) {
+            const turnServers = await res.json();
+            if (Array.isArray(turnServers) && turnServers.length > 0) {
+              servers = [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                ...turnServers,
+              ];
+              console.log(`[rtc] Got ${turnServers.length} working TURN servers from Metered API`);
+            }
+          }
+        } catch (err) {
+          console.warn('[rtc] Direct Metered API fetch failed:', err);
+        }
+      }
+
+      iceServersCache = servers || [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+      ];
       return iceServersCache;
     })();
   }

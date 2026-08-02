@@ -1,0 +1,10 @@
+{
+  "name": "whoosh-root",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "cd server && npm install",
+    "start": "node server/index.js"
+  }
+}
