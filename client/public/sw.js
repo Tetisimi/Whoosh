@@ -10,7 +10,7 @@
  * mode this file is replaced. In 'injectManifest' mode this is the base file.
  */
 
-const CACHE_NAME = 'whoosh-shell-v11'; // bump this to bust cache on deploy
+const CACHE_NAME = 'whoosh-shell-v12'; // bump this to bust cache on deploy
 const FONT_CACHE = 'whoosh-fonts-v1';
 
 // Files to precache (Vite will inject the actual hashed filenames via workbox)

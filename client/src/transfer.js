@@ -11,10 +11,11 @@
 import { generateUUID } from './utils/uuid.js';
 
 const CHUNK_SIZE        = 128 * 1024;   // 128 KB — 2× fewer iterations vs 64 KB; safe on all modern browsers
-const BUFFER_HIGH       = 1024 * 1024;  // 1 MB pipeline — keeps Direct P2P saturated
-const BUFFER_LOW        = 256 * 1024;   // Resume sending when buffer drains to 256 KB
-const PREFETCH          = 8;            // 8 × 128 KB = 1 MB parallel disk read-ahead
+const BUFFER_HIGH       = 8 * 1024 * 1024; // 8 MB pipeline — saturates 100Mbps-1Gbps Direct P2P WiFi
+const BUFFER_LOW        = 1024 * 1024;  // 1 MB low watermark — resumes immediately when buffer opens
+const PREFETCH          = 16;           // 16 × 128 KB = 2 MB parallel disk read-ahead
 const PROGRESS_INTERVAL = 80;           // Emit at most 12 UI updates/sec (≈ 60fps equivalent)
+const DRAIN_POLL_MS     = 5;            // Fast 5ms check to resume sending immediately when buffer drains
 const SPEED_WINDOW_MS   = 2000;         // 2-second rolling window for stable speed readings
 
 const encoder = new TextEncoder();
@@ -180,14 +181,16 @@ export class TransferManager extends EventTarget {
   }
 
   // Waits until the DataChannel buffer drains below BUFFER_LOW.
-  // • Uses the native bufferedamountlow event (no wrapping — so removeEventListener works).
-  // • Polls every PROGRESS_INTERVAL ms as iOS fallback AND to emit live progress during drain.
-  // • Checks state.cancelled so cancel is acted on within PROGRESS_INTERVAL ms, not 3s.
+  // • Uses native bufferedamountlow event for instant wakeup.
+  // • Fast 5ms poll guarantees maximum 5ms resume latency if event is missed/unsupported.
+  // • UI progress updates remain throttled to PROGRESS_INTERVAL (80ms).
+  // • Checks state.cancelled to abort within 5ms if cancelled.
   // • 3s hard cap prevents infinite hang on dead connections.
   #waitForBufferDrain(state) {
     if (this.#peer.bufferedAmount <= BUFFER_LOW) return Promise.resolve();
     return new Promise(resolve => {
       let settled = false;
+      let lastProgress = 0;
       const done = () => {
         if (!settled) {
           settled = true;
@@ -196,12 +199,15 @@ export class TransferManager extends EventTarget {
           resolve();
         }
       };
-      // Direct addEventListener so the exact same reference can be removed
       this.#peer.addEventListener('bufferedamountlow', done);
       const poll = setInterval(() => {
-        this.#emitSendProgress(state); // keep UI alive during drain (critical for TURN relay)
+        const now = Date.now();
+        if (now - lastProgress >= PROGRESS_INTERVAL) {
+          lastProgress = now;
+          this.#emitSendProgress(state, now);
+        }
         if (state.cancelled || this.#peer.bufferedAmount <= BUFFER_LOW) done();
-      }, PROGRESS_INTERVAL);
+      }, DRAIN_POLL_MS);
       setTimeout(done, 3000);
     });
   }
