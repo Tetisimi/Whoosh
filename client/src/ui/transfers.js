@@ -10,9 +10,11 @@ export class TransfersUI {
   #panel;
   /** Map<transferId, HTMLElement> */
   #items = new Map();
+  #onCancel = null;
 
-  constructor(panelEl) {
+  constructor(panelEl, onCancel = null) {
     this.#panel = panelEl;
+    this.#onCancel = onCancel;
     this.#panel.innerHTML = `
       <div class="transfers-header">
         <h3 class="transfers-title">Transfers</h3>
@@ -203,6 +205,7 @@ export class TransfersUI {
     `;
 
     el.querySelector('.transfer-cancel-btn')?.addEventListener('click', () => {
+      this.#onCancel?.(transferId);
       this.cancelTransfer(transferId);
     });
 

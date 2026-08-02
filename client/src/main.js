@@ -91,7 +91,12 @@ const pairing = new PairingUI(pairingContainer, {
   onJoinRoom: (code) => signaling.joinRoom(code),
 });
 
-const transfersUI = new TransfersUI(transfersPanel);
+const transfersUI = new TransfersUI(transfersPanel, (transferId) => {
+  for (const mgr of transferManagers.values()) {
+    mgr.cancelSend(transferId);
+    mgr.cancelReceive(transferId);
+  }
+});
 
 const historyUI = new HistoryUI(historyPanel, updateHistoryBadge);
 updateHistoryBadge();
@@ -547,11 +552,11 @@ function bindTransferManagerEvents(mgr, peerId) {
   });
 
   mgr.on('send-cancel', ({ transferId }) => {
-    transfersUI.markInterrupted(transferId);
+    transfersUI.cancelTransfer(transferId);
   });
 
   mgr.on('receive-cancel', ({ transferId }) => {
-    transfersUI.markInterrupted(transferId);
+    transfersUI.cancelTransfer(transferId);
   });
 
   mgr.on('text-message', ({ text }) => {

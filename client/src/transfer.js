@@ -10,8 +10,8 @@
 
 import { generateUUID } from './utils/uuid.js';
 
-const CHUNK_SIZE = 64 * 1024; // 64 KB (universal stable chunk size across mobile & desktop)
-const BUFFER_THRESHOLD = 256 * 1024; // 256 KB (prevents iOS WebKit buffer overflow crashes)
+const CHUNK_SIZE = 64 * 1024; // 64 KB
+const BUFFER_THRESHOLD = 1024 * 1024; // 1 MB (high-throughput pipeline)
 const SPEED_WINDOW_MS = 1000;
 
 const encoder = new TextEncoder();
@@ -113,20 +113,28 @@ export class TransferManager extends EventTarget {
       state.bytesSent += arrayBuffer.byteLength;
       state.nextChunk++;
 
-      // Track speed
+      // Track actual wire progress by subtracting current buffer queue
+      const buffered = this.#peer.bufferedAmount;
+      const actualBytesSent = Math.max(0, state.bytesSent - buffered);
+
       const now = Date.now();
-      state.speedSamples.push({ t: now, bytes: arrayBuffer.byteLength });
+      state.speedSamples.push({ t: now, bytes: actualBytesSent });
       state.speedSamples = state.speedSamples.filter((s) => now - s.t < SPEED_WINDOW_MS);
-      const speed = state.speedSamples.reduce((a, s) => a + s.bytes, 0) / (SPEED_WINDOW_MS / 1000);
+
+      const firstSample = state.speedSamples[0];
+      const lastSample = state.speedSamples[state.speedSamples.length - 1];
+      const timeDiffSec = (lastSample.t - firstSample.t) / 1000;
+      const bytesDiff = lastSample ? lastSample.bytes - (firstSample ? firstSample.bytes : 0) : 0;
+      const speed = timeDiffSec > 0 ? bytesDiff / timeDiffSec : 0;
 
       this.dispatchEvent(new CustomEvent('send-progress', {
         detail: {
           transferId,
-          bytesSent: state.bytesSent,
+          bytesSent: actualBytesSent,
           totalBytes: file.size,
           chunkIndex: state.nextChunk - 1,
           chunkCount,
-          speedBps: speed,
+          speedBps: Math.max(0, speed),
         },
       }));
     }
@@ -174,7 +182,22 @@ export class TransferManager extends EventTarget {
     const state = this.#sending.get(transferId);
     if (state) {
       state.cancelled = true;
+      this.#sending.delete(transferId);
       this.#sendJSON({ type: 'transfer-cancel', transferId });
+      this.dispatchEvent(new CustomEvent('send-cancel', { detail: { transferId } }));
+    }
+  }
+
+  /**
+   * Cancel an incoming transfer.
+   * @param {string} transferId
+   */
+  cancelReceive(transferId) {
+    const state = this.#receiving.get(transferId);
+    if (state) {
+      this.#receiving.delete(transferId);
+      this.#sendJSON({ type: 'transfer-cancel', transferId });
+      this.dispatchEvent(new CustomEvent('receive-cancel', { detail: { transferId } }));
     }
   }
 
@@ -307,8 +330,17 @@ export class TransferManager extends EventTarget {
   }
 
   #onTransferCancel(msg) {
-    this.#receiving.delete(msg.transferId);
-    this.dispatchEvent(new CustomEvent('receive-cancel', { detail: { transferId: msg.transferId } }));
+    const sendState = this.#sending.get(msg.transferId);
+    if (sendState) {
+      sendState.cancelled = true;
+      this.#sending.delete(msg.transferId);
+      this.dispatchEvent(new CustomEvent('send-cancel', { detail: { transferId: msg.transferId } }));
+    }
+    const receiveState = this.#receiving.get(msg.transferId);
+    if (receiveState) {
+      this.#receiving.delete(msg.transferId);
+      this.dispatchEvent(new CustomEvent('receive-cancel', { detail: { transferId: msg.transferId } }));
+    }
   }
 
   #onTextMessage(msg) {
