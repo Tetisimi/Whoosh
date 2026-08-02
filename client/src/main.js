@@ -122,6 +122,8 @@ signaling.on('registered', ({ id, localPeers }) => {
   prefetchIceServers();
 
   for (const peer of localPeers) {
+    // Skip if this is our own ghost connection (same codename = same device)
+    if (peer.codename === codename) continue;
     peerMeta.set(peer.id, peer);
     radar.addPeer(peer);
     // We are the newcomer — only initiate if our ID is lower to avoid both sides offering
@@ -132,11 +134,12 @@ signaling.on('registered', ({ id, localPeers }) => {
 
 signaling.on('peer-joined', (peer) => {
   if (peerMeta.has(peer.id)) return;
+  // Skip if this is our own ghost (same codename = same device reconnecting)
+  if (peer.codename === codename) return;
   peerMeta.set(peer.id, peer);
   radar.addPeer(peer);
   playChime('discovered');
-  // If we're hosting a room, close the modal immediately — no need to wait
-  // for the WebRTC channel to open before dismissing the pairing UI.
+  // If we're hosting a room, close the modal immediately
   if (currentRoomCode) {
     pairing.closeModal();
     showToast(`${peer.codename} joined — connecting…`);
