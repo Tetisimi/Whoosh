@@ -10,9 +10,10 @@
 
 import { generateUUID } from './utils/uuid.js';
 
-const CHUNK_SIZE = 64 * 1024;           // 64 KB – proven stable on all browsers/mobile
-const BUFFER_HIGH = 256 * 1024;         // Pause sending when buffer exceeds 256 KB
-const BUFFER_LOW  = 64 * 1024;          // Resume when buffer drains to 64 KB (matches bufferedAmountLowThreshold)
+const CHUNK_SIZE    = 64 * 1024;         // 64 KB — safe on all browsers including iOS Safari
+const BUFFER_HIGH   = 2 * 1024 * 1024;  // 2 MB pipeline — keeps Direct P2P saturated
+const BUFFER_LOW    = 256 * 1024;        // Resume after draining to 256 KB
+const PREFETCH      = 8;                 // Read 8 chunks (512 KB) ahead to overlap disk I/O
 const SPEED_WINDOW_MS = 1000;
 
 const encoder = new TextEncoder();
@@ -102,16 +103,33 @@ export class TransferManager extends EventTarget {
 
   async #pumpChunks(state) {
     const { transferId, file, chunkCount } = state;
+    // Bounded read-ahead: keep up to PREFETCH chunks pre-read as Promises.
+    // This overlaps disk I/O with network I/O, eliminating per-chunk stalls.
+    const reads = new Map(); // index -> Promise<ArrayBuffer>
+
+    const fillReadAhead = () => {
+      const limit = Math.min(chunkCount, state.nextChunk + PREFETCH);
+      for (let i = state.nextChunk; i < limit; i++) {
+        if (!reads.has(i)) {
+          const start = i * CHUNK_SIZE;
+          reads.set(i, file.slice(start, start + CHUNK_SIZE).arrayBuffer());
+        }
+      }
+    };
 
     while (state.nextChunk < chunkCount && !state.cancelled) {
-      // Tight high/low watermark flow control — prevents huge buffer buildup
+      // Kick off background reads before checking flow control
+      fillReadAhead();
+
+      // Flow control: drain the DataChannel buffer before adding more
       if (this.#peer.bufferedAmount > BUFFER_HIGH) {
         await this.#waitForBufferDrain();
         if (state.cancelled) break;
       }
 
-      const start = state.nextChunk * CHUNK_SIZE;
-      const arrayBuffer = await file.slice(start, start + CHUNK_SIZE).arrayBuffer();
+      // Await the pre-read chunk (usually already resolved)
+      const arrayBuffer = await reads.get(state.nextChunk);
+      reads.delete(state.nextChunk - 1); // evict chunk we no longer need
       if (state.cancelled) break;
 
       const ok = this.#peer.send(packBinaryChunk(transferId, state.nextChunk, arrayBuffer));
@@ -120,7 +138,7 @@ export class TransferManager extends EventTarget {
       state.bytesSent += arrayBuffer.byteLength;
       state.nextChunk++;
 
-      // Progress uses actual bytes leaving the buffer, not enqueued bytes
+      // Report progress based on actual bytes on the wire (not just enqueued)
       const actualSent = Math.max(0, state.bytesSent - this.#peer.bufferedAmount);
       const now = Date.now();
       state.speedSamples.push({ t: now, bytes: actualSent });
@@ -135,6 +153,8 @@ export class TransferManager extends EventTarget {
       }));
     }
 
+    reads.clear();
+
     if (!state.cancelled) {
       this.#sendJSON({ type: 'transfer-done', transferId });
       this.dispatchEvent(new CustomEvent('send-done', { detail: { transferId, fileName: file.name } }));
@@ -142,17 +162,17 @@ export class TransferManager extends EventTarget {
     this.#sending.delete(transferId);
   }
 
-  // Waits until the DataChannel buffer drains below the low watermark
+  // Waits until the DataChannel buffer drains below BUFFER_LOW.
+  // Uses event + 20ms polling fallback (iOS doesn't always fire bufferedamountlow).
+  // Hard 3s cap prevents infinite hang on dead connections.
   #waitForBufferDrain() {
     if (this.#peer.bufferedAmount <= BUFFER_LOW) return Promise.resolve();
     return new Promise(resolve => {
       let settled = false;
-      const done = () => { if (!settled) { settled = true; this.#peer.off?.('bufferedamountlow', done); resolve(); } };
+      const done = () => { if (!settled) { settled = true; clearInterval(poll); this.#peer.off?.('bufferedamountlow', done); resolve(); } };
       this.#peer.on('bufferedamountlow', done);
-      // Fallback: poll every 20ms in case the event doesn't fire (iOS quirk)
-      const poll = setInterval(() => { if (this.#peer.bufferedAmount <= BUFFER_LOW) { clearInterval(poll); done(); } }, 20);
-      // Hard cap at 3s to prevent infinite hang
-      setTimeout(() => { clearInterval(poll); done(); }, 3000);
+      const poll = setInterval(() => { if (this.#peer.bufferedAmount <= BUFFER_LOW) done(); }, 20);
+      setTimeout(done, 3000);
     });
   }
 
