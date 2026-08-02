@@ -525,7 +525,7 @@ function bindTransferManagerEvents(mgr, peerId) {
   const getMeta = () => peerMeta.get(peerId)?.codename ?? 'Unknown';
 
   mgr.on('send-start', ({ transferId, fileName, fileSize, chunkCount }) => {
-    transfersUI.addSend({ transferId, fileName, fileSize, chunkCount, peerCodename: getMeta() });
+    transfersUI.addSend({ transferId, fileName, fileSize, chunkCount, peerCodename: getMeta(), peerId });
   });
 
   mgr.on('send-progress', ({ transferId, bytesSent, totalBytes, speedBps }) => {
@@ -539,7 +539,7 @@ function bindTransferManagerEvents(mgr, peerId) {
   });
 
   mgr.on('receive-start', ({ transferId, fileName, fileSize }) => {
-    transfersUI.addReceive({ transferId, fileName, fileSize, peerCodename: getMeta() });
+    transfersUI.addReceive({ transferId, fileName, fileSize, peerCodename: getMeta(), peerId });
     radar.flashPeer(peerId, 'receive');
   });
 

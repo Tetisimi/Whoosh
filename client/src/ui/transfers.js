@@ -8,9 +8,8 @@ import { formatBytes } from '../utils/storage.js';
 export class TransfersUI {
   /** @type {HTMLElement} */
   #panel;
-  /** Map<transferId, HTMLElement> */
-  #items = new Map();
-  #onCancel = null;
+  /** Map<peerId, mode> */
+  #peerModes = new Map();
 
   constructor(panelEl, onCancel = null) {
     this.#panel = panelEl;
@@ -35,18 +34,15 @@ export class TransfersUI {
    * Create a send transfer item.
    * @param {{ transferId, fileName, fileSize, chunkCount, peerCodename }} opts
    */
-  addSend({ transferId, fileName, fileSize, chunkCount, peerCodename }) {
-    const el = this.#makeItem({ transferId, fileName, fileSize, direction: 'send', peerCodename });
+  addSend({ transferId, fileName, fileSize, chunkCount, peerCodename, peerId }) {
+    const el = this.#makeItem({ transferId, fileName, fileSize, direction: 'send', peerCodename, peerId });
     this.#list.prepend(el);
     this.#items.set(transferId, el);
     this.#updateEmpty();
   }
 
-  /**
-   * Create a receive transfer item.
-   */
-  addReceive({ transferId, fileName, fileSize, peerCodename }) {
-    const el = this.#makeItem({ transferId, fileName, fileSize, direction: 'receive', peerCodename });
+  addReceive({ transferId, fileName, fileSize, peerCodename, peerId }) {
+    const el = this.#makeItem({ transferId, fileName, fileSize, direction: 'receive', peerCodename, peerId });
     this.#list.prepend(el);
     this.#items.set(transferId, el);
     this.#updateEmpty();
@@ -166,28 +162,34 @@ export class TransfersUI {
    * @param {'direct'|'relayed'|'unknown'} mode
    */
   updatePeerMode(peerId, mode) {
+    this.#peerModes.set(peerId, mode);
     for (const [, el] of this.#items) {
-      const badge = el.querySelector('.transfer-mode-badge');
-      if (badge) {
-        badge.dataset.mode = mode;
-        badge.textContent = mode === 'relayed' ? '⚡ Relayed' : mode === 'direct' ? '⬤ Direct P2P' : '';
-        badge.title = mode === 'relayed'
-          ? 'Using TURN relay. Bandwidth capped by TURN server.'
-          : 'Direct local P2P. Maximum WiFi speed!';
+      if (el.dataset.peerId === peerId) {
+        const badge = el.querySelector('.transfer-mode-badge');
+        if (badge) {
+          badge.dataset.mode = mode;
+          badge.textContent = mode === 'relayed' ? '⚡ Relayed' : mode === 'direct' ? '⬤ Direct P2P' : '';
+          badge.title = mode === 'relayed'
+            ? 'Using TURN relay (cloud server limit ~200-384 KB/s)'
+            : 'Direct P2P (Local WiFi speed)';
+        }
       }
     }
   }
 
-  #makeItem({ transferId, fileName, fileSize, direction, peerCodename }) {
+  #makeItem({ transferId, fileName, fileSize, direction, peerCodename, peerId }) {
+    const mode = this.#peerModes.get(peerId) ?? 'unknown';
+    const modeText = mode === 'relayed' ? '⚡ Relayed' : mode === 'direct' ? '⬤ Direct P2P' : '';
     const el = document.createElement('div');
     el.className = 'transfer-item';
     el.dataset.transferId = transferId;
+    el.dataset.peerId = peerId ?? '';
     el.innerHTML = `
       <div class="transfer-header">
         <span class="transfer-direction">${direction === 'send' ? '↑' : '↓'}</span>
         <span class="transfer-filename" title="${fileName}">${truncateFilename(fileName)}</span>
         <span class="transfer-size">${formatBytes(fileSize)}</span>
-        <span class="transfer-mode-badge" data-mode="unknown"></span>
+        <span class="transfer-mode-badge" data-mode="${mode}">${modeText}</span>
       </div>
       <div class="transfer-peer">
         ${direction === 'send' ? 'To' : 'From'} <strong>${peerCodename}</strong>
@@ -200,11 +202,11 @@ export class TransfersUI {
       </div>
       <div class="transfer-stats">
         <span class="transfer-transferred">0 B</span>
-        <span class="transfer-speed">—</span>
+        <span class="transfer-speed">0 B/s</span>
         <span class="transfer-eta"></span>
       </div>
       <div class="transfer-actions">
-        <button class="btn btn--sm btn--ghost transfer-cancel-btn" title="Cancel & delete transfer">✕</button>
+        <button class="btn btn--sm btn--ghost transfer-cancel-btn" title="Cancel transfer">✕</button>
       </div>
     `;
 

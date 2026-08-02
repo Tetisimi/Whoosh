@@ -203,6 +203,7 @@ export class RtcPeer extends EventTarget {
     channel.addEventListener('open', () => {
       console.log(`[rtc] DataChannel open with ${this.#remoteId}`);
       this.dispatchEvent(new CustomEvent('channel-open'));
+      this.#startStatsMonitor();
     });
 
     channel.addEventListener('close', () => {
@@ -310,6 +311,21 @@ export class RtcPeer extends EventTarget {
    */
   get bufferedAmount() {
     return this.#channel?.bufferedAmount ?? 0;
+  }
+
+  #statsTimer = null;
+
+  #startStatsMonitor() {
+    if (this.#statsTimer) return;
+    this.#detectConnectionMode();
+    this.#statsTimer = setInterval(() => {
+      if (this.state === 'closed' || !this.isOpen) {
+        clearInterval(this.#statsTimer);
+        this.#statsTimer = null;
+        return;
+      }
+      this.#detectConnectionMode();
+    }, 1000);
   }
 
   /** Detect if we're using a TURN relay or a direct path. */
