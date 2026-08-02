@@ -29,6 +29,9 @@ export class TransferManager extends EventTarget {
   /** Map<transferId, ReceiveState> */
   #receiving = new Map();
 
+  #sendQueue = [];
+  #isSending = false;
+
   constructor(peer) {
     super();
     this.#peer = peer;
@@ -38,53 +41,63 @@ export class TransferManager extends EventTarget {
   // ── Sending ────────────────────────────────────────────────────────────────
 
   /**
-   * Send one or more files to the remote peer.
+   * Send one or more files to the remote peer via a sequential queue.
    * @param {File[]} files
    * @returns {Promise<string[]>} Transfer IDs
    */
   async sendFiles(files) {
     const ids = [];
     for (const file of files) {
-      const id = await this.#sendFile(file);
-      ids.push(id);
+      const transferId = generateUUID();
+      const chunkCount = Math.ceil(file.size / CHUNK_SIZE);
+
+      const state = {
+        transferId,
+        file,
+        chunkCount,
+        nextChunk: 0,
+        ackedChunks: new Set(),
+        cancelled: false,
+        startTime: Date.now(),
+        bytesSent: 0,
+        speedSamples: [],
+      };
+
+      this.#sending.set(transferId, state);
+      this.#sendQueue.push(state);
+      ids.push(transferId);
+
+      // Announce the transfer to receiver immediately so it appears on receiver UI
+      this.#sendJSON({
+        type: 'transfer-start',
+        transferId,
+        fileName: file.name,
+        fileSize: file.size,
+        fileType: file.type,
+        chunkCount,
+        chunkSize: CHUNK_SIZE,
+      });
+
+      this.dispatchEvent(new CustomEvent('send-start', {
+        detail: { transferId, fileName: file.name, fileSize: file.size, chunkCount },
+      }));
     }
+
+    this.#processQueue();
     return ids;
   }
 
-  async #sendFile(file) {
-    const transferId = generateUUID();
-    const chunkCount = Math.ceil(file.size / CHUNK_SIZE);
+  async #processQueue() {
+    if (this.#isSending) return;
+    this.#isSending = true;
 
-    const state = {
-      transferId,
-      file,
-      chunkCount,
-      nextChunk: 0,
-      ackedChunks: new Set(),
-      cancelled: false,
-      startTime: Date.now(),
-      bytesSent: 0,
-      speedSamples: [],
-    };
-    this.#sending.set(transferId, state);
+    while (this.#sendQueue.length > 0) {
+      const state = this.#sendQueue.shift();
+      if (!state || state.cancelled) continue;
+      await this.#pumpChunks(state);
+    }
 
-    // Announce the transfer
-    this.#sendJSON({
-      type: 'transfer-start',
-      transferId,
-      fileName: file.name,
-      fileSize: file.size,
-      fileType: file.type,
-      chunkCount,
-      chunkSize: CHUNK_SIZE,
-    });
-
-    this.dispatchEvent(new CustomEvent('send-start', {
-      detail: { transferId, fileName: file.name, fileSize: file.size, chunkCount },
-    }));
-
-    await this.#pumpChunks(state);
-    return transferId;
+    this.#isSending = false;
   }
 
   async #pumpChunks(state) {
@@ -275,10 +288,18 @@ export class TransferManager extends EventTarget {
   }
 
   #onBinaryChunk(transferId, chunkIndex, arrayBuffer) {
-    // Robust state matching: try exact UUID, or fallback to single active receiving transfer
     let state = this.#receiving.get(transferId);
-    if (!state && this.#receiving.size === 1) {
-      state = this.#receiving.values().next().value;
+    if (!state) {
+      const clean = transferId.trim();
+      state = this.#receiving.get(clean);
+    }
+    if (!state && this.#receiving.size > 0) {
+      for (const s of this.#receiving.values()) {
+        if (s.receivedCount < s.chunkCount) {
+          state = s;
+          break;
+        }
+      }
     }
     if (!state) return;
 
@@ -378,11 +399,13 @@ export class TransferManager extends EventTarget {
 
 function packBinaryChunk(transferId, chunkIndex, chunkArrayBuffer) {
   const headerLen = 40;
-  const idBytes = encoder.encode(transferId);
   const packet = new Uint8Array(headerLen + chunkArrayBuffer.byteLength);
 
-  // Bytes 0..35: UUID string
-  packet.set(idBytes.subarray(0, 36), 0);
+  // Bytes 0..35: UUID string ASCII
+  const cleanId = (transferId || '').padEnd(36, ' ').slice(0, 36);
+  for (let i = 0; i < 36; i++) {
+    packet[i] = cleanId.charCodeAt(i);
+  }
 
   // Bytes 36..39: Uint32 chunkIndex
   const view = new DataView(packet.buffer);
@@ -395,10 +418,14 @@ function packBinaryChunk(transferId, chunkIndex, chunkArrayBuffer) {
 
 function unpackBinaryChunk(arrayBuffer) {
   const headerLen = 40;
-  const view = new DataView(arrayBuffer);
-  const idBytes = new Uint8Array(arrayBuffer, 0, 36);
-  const transferId = decoder.decode(idBytes);
+  const bytes = new Uint8Array(arrayBuffer, 0, 36);
+  let transferId = '';
+  for (let i = 0; i < 36; i++) {
+    transferId += String.fromCharCode(bytes[i]);
+  }
+  transferId = transferId.trim();
 
+  const view = new DataView(arrayBuffer);
   const chunkIndex = view.getUint32(36, true);
   const data = arrayBuffer.slice(headerLen);
 
