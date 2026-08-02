@@ -26,6 +26,7 @@
 
 import 'dotenv/config';
 import { createServer } from 'http';
+import { get as httpsGet } from 'https';
 import { WebSocketServer } from 'ws';
 import { randomUUID } from 'crypto';
 import {
@@ -42,11 +43,31 @@ const PORT = process.env.PORT ?? 3000;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN ?? 'http://localhost:5173';
 
 // ── ICE / TURN credential cache ───────────────────────────────────────────────
-// Metered issues short-lived credentials via their API. We cache them for
-// 5 minutes so each /ice-config request doesn’t hammer Metered.
+// ── ICE / TURN credential cache ───────────────────────────────────────────────
 let _iceCache = null;
 let _iceCachedAt = 0;
 const ICE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function fetchMeteredTurnCredentials(appName, apiKey) {
+  return new Promise((resolve, reject) => {
+    const url = `https://${appName}.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`;
+    httpsGet(url, (res) => {
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        return reject(new Error(`Metered API HTTP ${res.statusCode}`));
+      }
+      let raw = '';
+      res.on('data', (chunk) => { raw += chunk; });
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(raw);
+          resolve(Array.isArray(data) ? data : []);
+        } catch (e) {
+          reject(e);
+        }
+      });
+    }).on('error', reject);
+  });
+}
 
 async function getIceServers() {
   if (_iceCache && Date.now() - _iceCachedAt < ICE_CACHE_TTL_MS) {
@@ -58,47 +79,22 @@ async function getIceServers() {
     { urls: 'stun:stun1.l.google.com:19302' },
   ];
 
-  // Option 1: fetch fresh short-lived credentials from Metered API.
   const apiKey =
     process.env.METERED_API_KEY ||
     (process.env.METERED_TURN && !process.env.METERED_TURN.trim().startsWith('{') && !process.env.METERED_TURN.trim().startsWith('[') ? process.env.METERED_TURN.trim() : null) ||
     'd3bac2fe415d4cb0cdb0d1e19dacfb11926b';
   const appName = process.env.METERED_APP_NAME || 'whoosh';
 
-  if (apiKey && appName) {
-    try {
-      const url = `https://${appName}.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`;
-      const res = await fetch(url);
-      if (res.ok) {
-        const turnServers = await res.json();
-        if (Array.isArray(turnServers) && turnServers.length > 0) {
-          _iceCache = [...base, ...turnServers];
-          _iceCachedAt = Date.now();
-          console.log(`[ice] Successfully fetched ${turnServers.length} TURN servers from Metered API`);
-          return _iceCache;
-        }
-      }
-      console.warn('[ice] Metered API returned status:', res.status);
-    } catch (err) {
-      console.warn('[ice] Metered API fetch failed:', err.message);
+  try {
+    const turnServers = await fetchMeteredTurnCredentials(appName, apiKey);
+    if (turnServers.length > 0) {
+      _iceCache = [...base, ...turnServers];
+      _iceCachedAt = Date.now();
+      console.log(`[ice] Successfully fetched ${turnServers.length} TURN servers from Metered API`);
+      return _iceCache;
     }
-  }
-
-  // Option 2: METERED_TURN env var set as a JSON ICE-servers array (legacy).
-  const meteredTurnJson = process.env.METERED_TURN;
-  if (meteredTurnJson) {
-    try {
-      const parsed = JSON.parse(meteredTurnJson);
-      const servers = Array.isArray(parsed) ? parsed : parsed.iceServers ?? [];
-      if (servers.length) {
-        _iceCache = [...base, ...servers.filter((s) => s.urls)];
-        _iceCachedAt = Date.now();
-        console.log('[ice] Using METERED_TURN env var ICE servers');
-        return _iceCache;
-      }
-    } catch (err) {
-      console.warn('[ice] Failed to parse METERED_TURN env var:', err.message);
-    }
+  } catch (err) {
+    console.warn('[ice] Metered API fetch error:', err.message);
   }
 
   console.warn('[ice] Falling back to STUN only');
