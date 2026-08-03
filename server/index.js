@@ -257,21 +257,14 @@ function normalizeIp(rawIp) {
 function handleRegister(ws, id, rawIp, codename) {
   const ip = normalizeIp(rawIp);
 
-  // Evict any ghost connection with the same codename anywhere in the system
-  for (const [existingId, existingPeer] of peers.entries()) {
-    if (existingPeer.codename === codename && existingId !== id) {
-      console.log(`[ws] Evicting ghost peer ${existingId} (${codename}) — replaced by ${id}`);
-      peers.delete(existingId);
-      removeFromLocalRoom(existingPeer.ip, existingId);
-      removeFromCodeRooms(existingId);
-      for (const p of peers.values()) {
-        send(p.ws, { type: 'peer-left', id: existingId });
-      }
-      try { existingPeer.ws.terminate(); } catch { /* */ }
-    }
+  // Ensure codename is unique across active connections without terminating sockets
+  let uniqueCodename = codename;
+  let counter = 2;
+  while ([...peers.values()].some((p) => p.codename === uniqueCodename && p.id !== id)) {
+    uniqueCodename = `${codename} ${counter++}`;
   }
 
-  const peer = { id, codename, ws, ip };
+  const peer = { id, codename: uniqueCodename, ws, ip };
   peers.set(id, peer);
   addToLocalRoom(ip, peer);
 

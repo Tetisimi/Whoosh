@@ -57,9 +57,10 @@ export function generateCodename() {
  * @returns {string}
  */
 export function getOrCreateCodename() {
-  const stored = localStorage.getItem('whoosh:codename');
-  if (stored) return stored;
+  const sessionStored = sessionStorage.getItem('whoosh:codename');
+  if (sessionStored) return sessionStored;
   const name = generateCodename();
+  sessionStorage.setItem('whoosh:codename', name);
   localStorage.setItem('whoosh:codename', name);
   return name;
 }

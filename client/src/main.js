@@ -174,8 +174,7 @@ signaling.on('registered', ({ id, localPeers }) => {
   prefetchIceServers();
 
   for (const peer of localPeers) {
-    // Skip if this is our own ghost connection (same codename = same device)
-    if (peer.codename === codename) continue;
+    if (peer.id === localPeerId) continue;
     evictStalePeerByCodename(peer);
     peerMeta.set(peer.id, peer);
     radar.addPeer(peer);
@@ -186,9 +185,7 @@ signaling.on('registered', ({ id, localPeers }) => {
 });
 
 signaling.on('peer-joined', (peer) => {
-  if (peerMeta.has(peer.id)) return;
-  // Skip if this is our own ghost (same codename = same device reconnecting)
-  if (peer.codename === codename) return;
+  if (peerMeta.has(peer.id) || peer.id === localPeerId) return;
   evictStalePeerByCodename(peer);
   peerMeta.set(peer.id, peer);
   radar.addPeer(peer);
@@ -241,8 +238,7 @@ signaling.on('room-joined', ({ code, members }) => {
   currentRoomCode = code;
   pairing.closeModal();
   for (const member of members) {
-    if (!peerMeta.has(member.id)) {
-      if (member.codename === codename) continue;
+    if (!peerMeta.has(member.id) && member.id !== localPeerId) {
       evictStalePeerByCodename(member);
       peerMeta.set(member.id, member);
       radar.addPeer(member);
