@@ -10,12 +10,12 @@
 
 import { generateUUID } from './utils/uuid.js';
 
-const CHUNK_SIZE        = 64 * 1024;      // 64 KB — PairDrop/Snapdrop standard SCTP chunk size
-const BUFFER_HIGH       = 1024 * 1024;   // 1 MB high watermark
-const BUFFER_LOW        = 256 * 1024;    // 256 KB low watermark
-const PREFETCH          = 16;            // Read-ahead 16 chunks (1 MB) in parallel with sending
-const PROGRESS_INTERVAL = 80;            // Throttle UI DOM progress updates to 12/sec
-const SPEED_WINDOW_MS   = 1500;          // 1.5s rolling speed window
+const CHUNK_SIZE        = 64 * 1024;         // 64 KB — standard SCTP chunk size
+const SLAB_SIZE         = 2 * 1024 * 1024;   // 2 MB memory slab batch-read from disk
+const BUFFER_HIGH       = 8 * 1024 * 1024;   // 8 MB high watermark to maintain throughput on Gigabit LAN
+const BUFFER_LOW        = 2 * 1024 * 1024;   // 2 MB low watermark for instant resumption
+const PROGRESS_INTERVAL = 100;               // Throttle UI DOM progress updates to 10/sec for smooth DOM rendering
+const SPEED_WINDOW_MS   = 1500;              // 1.5s rolling speed window
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -103,52 +103,71 @@ export class TransferManager extends EventTarget {
 
   async #pumpChunks(state) {
     const { transferId, file, chunkCount } = state;
-
-    // Parallel Disk I/O Read-Ahead: Keep up to PREFETCH chunkPromises in flight
-    const reads = new Map();
-    const fillReadAhead = () => {
-      const limit = Math.min(chunkCount, state.nextChunk + PREFETCH);
-      for (let i = state.nextChunk; i < limit; i++) {
-        if (!reads.has(i)) {
-          const start = i * CHUNK_SIZE;
-          reads.set(i, file.slice(start, start + CHUNK_SIZE).arrayBuffer());
-        }
-      }
-    };
-
     let lastProgressAt = 0;
 
-    while (state.nextChunk < chunkCount && !state.cancelled) {
-      fillReadAhead();
+    // 2 MB Slab Double-Buffering: read large blocks from disk once and slice synchronously in memory
+    const chunksPerSlab = Math.floor(SLAB_SIZE / CHUNK_SIZE);
+    let slabIdx = Math.floor(state.nextChunk / chunksPerSlab);
+    const totalSlabs = Math.ceil(file.size / SLAB_SIZE);
 
-      // PairDrop backpressure check: pause if DataChannel buffer exceeds high watermark
+    const fetchSlab = (idx) => {
+      if (idx >= totalSlabs) return null;
+      const start = idx * SLAB_SIZE;
+      const end = Math.min(file.size, start + SLAB_SIZE);
+      return file.slice(start, end).arrayBuffer();
+    };
+
+    let currentSlabPromise = fetchSlab(slabIdx);
+    let nextSlabPromise = fetchSlab(slabIdx + 1);
+
+    while (state.nextChunk < chunkCount && !state.cancelled) {
       if (this.#peer.bufferedAmount > BUFFER_HIGH) {
         await this.#waitForBufferDrain(state);
         if (state.cancelled) break;
       }
 
-      const arrayBuffer = await reads.get(state.nextChunk);
-      reads.delete(state.nextChunk);
-      if (state.cancelled) break;
+      const slab = await currentSlabPromise;
+      if (!slab || state.cancelled) break;
 
-      // PairDrop Direct Binary Send: Send raw ArrayBuffer directly without header overhead
-      const ok = this.#peer.send(arrayBuffer);
-      if (!ok) {
-        await sleep(2);
-        continue;
+      const slabStartChunk = slabIdx * chunksPerSlab;
+      const chunksInThisSlab = Math.ceil(slab.byteLength / CHUNK_SIZE);
+
+      for (let i = 0; i < chunksInThisSlab && !state.cancelled; i++) {
+        const chunkIndex = slabStartChunk + i;
+        if (chunkIndex < state.nextChunk) continue;
+
+        if (this.#peer.bufferedAmount > BUFFER_HIGH) {
+          await this.#waitForBufferDrain(state);
+          if (state.cancelled) break;
+        }
+
+        const offset = i * CHUNK_SIZE;
+        const length = Math.min(CHUNK_SIZE, slab.byteLength - offset);
+        const chunkBuffer = slab.slice(offset, offset + length);
+
+        const ok = this.#peer.send(chunkBuffer);
+        if (!ok) {
+          await sleep(2);
+          if (!this.#peer.send(chunkBuffer)) {
+            await sleep(10);
+            this.#peer.send(chunkBuffer);
+          }
+        }
+
+        state.bytesSent += length;
+        state.nextChunk = chunkIndex + 1;
+
+        const now = Date.now();
+        if (now - lastProgressAt >= PROGRESS_INTERVAL) {
+          lastProgressAt = now;
+          this.#emitSendProgress(state, now);
+        }
       }
 
-      state.bytesSent += arrayBuffer.byteLength;
-      state.nextChunk++;
-
-      const now = Date.now();
-      if (now - lastProgressAt >= PROGRESS_INTERVAL) {
-        lastProgressAt = now;
-        this.#emitSendProgress(state, now);
-      }
+      slabIdx++;
+      currentSlabPromise = nextSlabPromise;
+      nextSlabPromise = fetchSlab(slabIdx + 1);
     }
-
-    reads.clear();
 
     if (!state.cancelled) {
       // 1. Wait until all buffered bytes have actually left the sender's network socket
@@ -189,18 +208,31 @@ export class TransferManager extends EventTarget {
     });
   }
 
+  #updateSpeed(state, deltaBytes, now = Date.now()) {
+    state.bytesInWindow = (state.bytesInWindow || 0) + deltaBytes;
+    const samples = state.speedSamples || (state.speedSamples = []);
+    // Bucket speed samples by 100ms to eliminate garbage collection pauses at gigabit rates
+    if (samples.length > 0 && now - samples[samples.length - 1].t < 100) {
+      samples[samples.length - 1].bytes += deltaBytes;
+    } else {
+      samples.push({ t: now, bytes: deltaBytes });
+    }
+    while (samples.length > 0 && now - samples[0].t > SPEED_WINDOW_MS) {
+      state.bytesInWindow -= samples.shift().bytes;
+    }
+    return Math.max(0, (state.bytesInWindow / SPEED_WINDOW_MS) * 1000);
+  }
+
   #emitSendProgress(state, now = Date.now()) {
     const actualSent = Math.max(0, state.bytesSent - this.#peer.bufferedAmount);
     const delta = actualSent - state.lastActualSent;
+    let speed = 0;
     if (delta > 0) {
       state.lastActualSent = actualSent;
-      state.bytesInWindow += delta;
-      state.speedSamples.push({ t: now, bytes: delta });
+      speed = this.#updateSpeed(state, delta, now);
+    } else {
+      speed = this.#updateSpeed(state, 0, now);
     }
-    while (state.speedSamples.length > 0 && now - state.speedSamples[0].t > SPEED_WINDOW_MS) {
-      state.bytesInWindow -= state.speedSamples.shift().bytes;
-    }
-    const speed = (state.bytesInWindow / SPEED_WINDOW_MS) * 1000;
 
     this.dispatchEvent(new CustomEvent('send-progress', {
       detail: {
@@ -359,13 +391,7 @@ export class TransferManager extends EventTarget {
     state.bytesReceived += arrayBuffer.byteLength;
 
     const now = Date.now();
-    state.bytesInWindow += arrayBuffer.byteLength;
-    state.speedSamples.push({ t: now, bytes: arrayBuffer.byteLength });
-
-    while (state.speedSamples.length > 0 && now - state.speedSamples[0].t > SPEED_WINDOW_MS) {
-      state.bytesInWindow -= state.speedSamples.shift().bytes;
-    }
-    const speed = (state.bytesInWindow / SPEED_WINDOW_MS) * 1000;
+    const speed = this.#updateSpeed(state, arrayBuffer.byteLength, now);
 
     if (!state.lastProgressAt || now - state.lastProgressAt >= PROGRESS_INTERVAL) {
       state.lastProgressAt = now;
@@ -401,6 +427,7 @@ export class TransferManager extends EventTarget {
         transferId: state.transferId,
         fileName: state.fileName,
         fileSize: state.fileSize,
+        fileType: state.fileType,
         blob,
         url,
       },

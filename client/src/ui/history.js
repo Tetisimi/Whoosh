@@ -5,19 +5,23 @@
  */
 
 import { loadHistory, removeHistoryEntry, clearHistory, formatBytes } from '../utils/storage.js';
+import { getFileBlob } from '../utils/fileStorage.js';
 
 export class HistoryUI {
   #panel;
   #onUpdate;
+  #onOpenChat;
   #openMenuId = null;
 
   /**
    * @param {HTMLElement} panelEl
    * @param {() => void} onUpdate - called when history changes (to update badge)
+   * @param {(peerCodename: string) => void} [onOpenChat] - open interactive conversation
    */
-  constructor(panelEl, onUpdate) {
+  constructor(panelEl, onUpdate, onOpenChat = null) {
     this.#panel = panelEl;
     this.#onUpdate = onUpdate;
+    this.#onOpenChat = onOpenChat;
     this.render();
   }
 
@@ -53,6 +57,59 @@ export class HistoryUI {
         const id = btn.dataset.id;
         this.#toggleMenu(id);
       });
+    });
+
+    // Attach click handlers and fetch persisted IndexedDB file blobs for history items
+    this.#panel.querySelectorAll('.history-entry').forEach((el) => {
+      const id = el.dataset.id;
+      const kind = el.dataset.kind;
+      const codename = el.dataset.codename;
+
+      if (kind === 'text') {
+        el.style.cursor = 'pointer';
+        el.title = `Tap to open B2B chat with ${codename}`;
+        el.addEventListener('click', (e) => {
+          if (!e.target.closest('.history-actions-wrap')) {
+            this.#onOpenChat?.(codename);
+          }
+        });
+      } else if (kind === 'file') {
+        // Asynchronously check if the file exists in IndexedDB so users can re-open or share it
+        getFileBlob(id).then((stored) => {
+          if (!stored || !stored.blob) return;
+          const actionsBox = el.querySelector('.history-item-buttons');
+          if (!actionsBox) return;
+          actionsBox.innerHTML = '';
+
+          // Native Mobile Share Sheet button
+          if (navigator.canShare) {
+            try {
+              const file = new File([stored.blob], stored.fileName, { type: stored.fileType || 'application/octet-stream' });
+              if (navigator.canShare({ files: [file] })) {
+                const shareBtn = document.createElement('button');
+                shareBtn.className = 'btn btn--sm btn--primary history-action-btn';
+                shareBtn.innerHTML = '📤 Share / Save';
+                shareBtn.addEventListener('click', async (evt) => {
+                  evt.stopPropagation();
+                  try {
+                    await navigator.share({ files: [file], title: stored.fileName });
+                  } catch { /* canceled */ }
+                });
+                actionsBox.appendChild(shareBtn);
+              }
+            } catch { /* fallback */ }
+          }
+
+          const url = URL.createObjectURL(stored.blob);
+          const dlBtn = document.createElement('a');
+          dlBtn.href = url;
+          dlBtn.download = stored.fileName;
+          dlBtn.className = 'btn btn--sm btn--ghost history-action-btn';
+          dlBtn.innerHTML = '↓ Save File';
+          dlBtn.addEventListener('click', (evt) => evt.stopPropagation());
+          actionsBox.appendChild(dlBtn);
+        });
+      }
     });
 
     // Close menu when clicking outside
@@ -114,7 +171,7 @@ export class HistoryUI {
     const fullMessageText = entry.text || entry.filename;
 
     return `
-      <div class="history-entry" data-id="${entry.id}">
+      <div class="history-entry" data-id="${entry.id}" data-kind="${entry.kind}" data-codename="${escapeHtml(entry.peerCodename)}">
         <div class="history-icon-box">
           <span class="history-icon">${icon}</span>
         </div>
@@ -125,6 +182,7 @@ export class HistoryUI {
           <div class="history-entry-meta">
             ${metaParts.join(' · ')}
           </div>
+          <div class="history-item-buttons" style="display:flex; gap:8px; margin-top:8px;"></div>
         </div>
         <div class="history-actions-wrap">
           <button class="history-menu-btn" data-id="${entry.id}" aria-label="Options">•••</button>

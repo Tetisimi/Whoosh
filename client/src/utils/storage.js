@@ -6,6 +6,8 @@
  */
 
 import { generateUUID } from './uuid.js';
+import { getOrCreateCodename } from './codename.js';
+import { deleteFileBlob } from './fileStorage.js';
 
 const HISTORY_KEY = 'whoosh:history';
 const MAX_ENTRIES = 200;
@@ -19,16 +21,21 @@ const MAX_ENTRIES = 200;
  * @property {number}  sizeBytes
  * @property {number}  timestamp   - Unix ms
  * @property {'file'|'text'}  kind
+ * @property {string}  [ownerCodename]
+ * @property {string}  [text]
  */
 
 /**
- * Load all history entries from localStorage.
+ * Load all history entries for the current device from localStorage.
  * @returns {HistoryEntry[]}
  */
 export function loadHistory() {
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const all = raw ? JSON.parse(raw) : [];
+    const currentOwner = getOrCreateCodename();
+    // Filter history so each device only sees its own activity (crucial for same-origin testing)
+    return all.filter((e) => !e.ownerCodename || e.ownerCodename === currentOwner);
   } catch {
     return [];
   }
@@ -36,19 +43,27 @@ export function loadHistory() {
 
 /**
  * Append a new history entry. Trims to MAX_ENTRIES automatically.
- * @param {Omit<HistoryEntry, 'id' | 'timestamp'>} entry
+ * @param {Omit<HistoryEntry, 'timestamp'>} entry
  */
 export function addHistoryEntry(entry) {
-  const history = loadHistory();
+  let all = [];
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    all = raw ? JSON.parse(raw) : [];
+  } catch {
+    all = [];
+  }
+
   const newEntry = {
-    id: generateUUID(),
+    id: entry.id || generateUUID(),
     timestamp: Date.now(),
+    ownerCodename: getOrCreateCodename(),
     ...entry,
   };
 
-  history.unshift(newEntry); // newest first
-  history.splice(MAX_ENTRIES); // cap length
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  all.unshift(newEntry); // newest first
+  all.splice(MAX_ENTRIES); // cap length
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(all));
   return newEntry;
 }
 
@@ -57,15 +72,34 @@ export function addHistoryEntry(entry) {
  * @param {string} id
  */
 export function removeHistoryEntry(id) {
-  const history = loadHistory().filter((e) => e.id !== id);
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  let all = [];
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    all = raw ? JSON.parse(raw) : [];
+  } catch { return; }
+  all = all.filter((e) => e.id !== id);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(all));
+  deleteFileBlob(id);
 }
 
 /**
- * Clear all history.
+ * Clear all history for the current device.
  */
 export function clearHistory() {
-  localStorage.removeItem(HISTORY_KEY);
+  const currentOwner = getOrCreateCodename();
+  let all = [];
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    all = raw ? JSON.parse(raw) : [];
+  } catch { return; }
+
+  const toDelete = all.filter((e) => !e.ownerCodename || e.ownerCodename === currentOwner);
+  for (const item of toDelete) {
+    deleteFileBlob(item.id);
+  }
+
+  const remaining = all.filter((e) => e.ownerCodename && e.ownerCodename !== currentOwner);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(remaining));
 }
 
 /**

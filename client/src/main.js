@@ -14,6 +14,8 @@ import { getOrCreateCodename } from './utils/codename.js';
 import { buildSharedSecret, deriveVerificationEmojis } from './utils/verification.js';
 import { addHistoryEntry } from './utils/storage.js';
 import { playChime } from './utils/audio.js';
+import { ChatUI } from './ui/chat.js';
+import { saveFileBlob } from './utils/fileStorage.js';
 
 // ── PWA Service Worker & Cache Cleanup ──────────────────────────────────────
 if (!import.meta.env.PROD) {
@@ -93,6 +95,31 @@ const pairing = new PairingUI(pairingContainer, {
   onJoinRoom: (code) => signaling.joinRoom(code),
 });
 
+function openChatWithPeer(targetCodename) {
+  if (!targetCodename || targetCodename === 'Unknown') return;
+  let targetId = null;
+  for (const [id, meta] of peerMeta.entries()) {
+    if (meta.codename === targetCodename) {
+      targetId = id;
+      break;
+    }
+  }
+  chatUI.open(targetCodename, targetId);
+}
+
+const chatUI = new ChatUI(document.getElementById('chat-panel'), {
+  onSend: (targetCodename, targetId, text) => {
+    sendTextDirect(targetCodename, targetId, text);
+  },
+  getPeerStatus: (peerId, codename) => {
+    if (peerId && peers.get(peerId)?.isOpen) return true;
+    for (const [id, meta] of peerMeta.entries()) {
+      if (meta.codename === codename && peers.get(id)?.isOpen) return true;
+    }
+    return false;
+  },
+});
+
 const transfersUI = new TransfersUI(transfersPanel, (transferId) => {
   // Cancel on this device
   for (const [peerId, mgr] of transferManagers) {
@@ -101,15 +128,16 @@ const transfersUI = new TransfersUI(transfersPanel, (transferId) => {
     // Relay cancel via WebSocket — bypasses a frozen DataChannel
     signaling.signal(peerId, { type: 'transfer-cancel', transferId });
   }
-});
+}, openChatWithPeer);
 
-const historyUI = new HistoryUI(historyPanel, updateHistoryBadge);
+const historyUI = new HistoryUI(historyPanel, updateHistoryBadge, openChatWithPeer);
 updateHistoryBadge();
 
 // ── Tab navigation ────────────────────────────────────────────────────────────
 
 tabBtns.forEach((btn) => {
   btn.addEventListener('click', () => {
+    chatUI.close();
     const target = btn.dataset.tab;
     tabBtns.forEach((b) => b.classList.remove('tab-btn--active'));
     tabPanels.forEach((p) => p.classList.remove('tab-panel-page--active'));
@@ -123,6 +151,20 @@ tabBtns.forEach((btn) => {
 
 const signaling = new SignalingClient(SIGNALING_URL, codename);
 
+function evictStalePeerByCodename(newPeer) {
+  for (const [existingId, meta] of peerMeta.entries()) {
+    if (meta.codename === newPeer.codename && existingId !== newPeer.id) {
+      console.log(`[app] Evicting stale peer session ${existingId} (${newPeer.codename}) replaced by ${newPeer.id}`);
+      peerMeta.delete(existingId);
+      radar.removePeer(existingId);
+      transferManagers.get(existingId)?.cancelAllActive();
+      peers.get(existingId)?.close();
+      peers.delete(existingId);
+      transferManagers.delete(existingId);
+    }
+  }
+}
+
 signaling.on('registered', ({ id, localPeers }) => {
   localPeerId = id;
   radar.setLocalId(id);
@@ -134,6 +176,7 @@ signaling.on('registered', ({ id, localPeers }) => {
   for (const peer of localPeers) {
     // Skip if this is our own ghost connection (same codename = same device)
     if (peer.codename === codename) continue;
+    evictStalePeerByCodename(peer);
     peerMeta.set(peer.id, peer);
     radar.addPeer(peer);
     // We are the newcomer — only initiate if our ID is lower to avoid both sides offering
@@ -146,6 +189,7 @@ signaling.on('peer-joined', (peer) => {
   if (peerMeta.has(peer.id)) return;
   // Skip if this is our own ghost (same codename = same device reconnecting)
   if (peer.codename === codename) return;
+  evictStalePeerByCodename(peer);
   peerMeta.set(peer.id, peer);
   radar.addPeer(peer);
   playChime('discovered');
@@ -198,6 +242,8 @@ signaling.on('room-joined', ({ code, members }) => {
   pairing.closeModal();
   for (const member of members) {
     if (!peerMeta.has(member.id)) {
+      if (member.codename === codename) continue;
+      evictStalePeerByCodename(member);
       peerMeta.set(member.id, member);
       radar.addPeer(member);
       // Use the same ID-comparison logic as LAN discovery so both sides
@@ -243,7 +289,7 @@ function initiatePeerConnection(peerId, asInitiator) {
   createPeer(peerId, asInitiator);
 }
 
-function createPeer(peerId, initiator) {
+function createPeer(peerId, initiator, allowTurn = false) {
   const peer = new RtcPeer({
     signaling,
     localId: localPeerId,
@@ -275,7 +321,7 @@ function createPeer(peerId, initiator) {
         console.warn(`[app] Peer ${peerId} failed after ${retryCount} attempts — giving up`);
         return;
       }
-      console.warn(`[app] Peer ${peerId} failed — retry attempt ${retryCount}`);
+      console.warn(`[app] Peer ${peerId} failed — retry attempt ${retryCount} (enabling TURN fallback)`);
       setTimeout(() => {
         if (!peers.has(peerId)) return;
         peers.get(peerId)?.close();
@@ -284,7 +330,7 @@ function createPeer(peerId, initiator) {
         if (peerMeta.has(peerId)) {
           const shouldInitiate = localPeerId < peerId;
           // Pass retry count through so next peer instance knows its attempt #
-          const newPeer = createPeer(peerId, shouldInitiate);
+          const newPeer = createPeer(peerId, shouldInitiate, true);
           newPeer._retryCount = retryCount;
         }
       }, 1500 * retryCount); // back off: 1.5s, 3s
@@ -296,7 +342,7 @@ function createPeer(peerId, initiator) {
     transfersUI.updatePeerMode(peerId, mode);
   });
 
-  peer.connect();
+  peer.connect(allowTurn);
   return peer;
 }
 
@@ -478,11 +524,16 @@ function handlePeerClick(peerId, peerName) {
 
 // ── Transfer helpers ──────────────────────────────────────────────────────────
 
+const pendingOutboundFiles = new Map();
+
 function sendFilesToPeer(peerId, files) {
   const mgr = transferManagers.get(peerId);
   if (!mgr || !peers.get(peerId)?.isOpen) {
     showToast('Peer not connected yet — wait a moment and try again.');
     return;
+  }
+  for (const f of files) {
+    pendingOutboundFiles.set(f.name, f);
   }
   radar.flashPeer(peerId, 'send');
   mgr.sendFiles(files);
@@ -498,6 +549,36 @@ function sendFilesToAllOrSelected(files) {
   }
 }
 
+function sendTextDirect(targetCodename, targetId, text) {
+  let mgr = targetId ? transferManagers.get(targetId) : null;
+  let actualId = targetId;
+  if (!mgr || !peers.get(actualId)?.isOpen) {
+    for (const [id, meta] of peerMeta.entries()) {
+      if (meta.codename === targetCodename && peers.get(id)?.isOpen) {
+        actualId = id;
+        mgr = transferManagers.get(id);
+        break;
+      }
+    }
+  }
+  if (mgr && peers.get(actualId)?.isOpen) {
+    mgr.sendText(text);
+    const snippet = text.length > 36 ? text.slice(0, 36) + '…' : text;
+    const entry = addHistoryEntry({
+      direction: 'sent',
+      peerCodename: targetCodename,
+      filename: snippet,
+      text: text,
+      sizeBytes: 0,
+      kind: 'text',
+    });
+    transfersUI.addTextMessage({ id: entry.id, text, peerCodename: targetCodename, direction: 'sent' });
+    updateHistoryBadge();
+  } else {
+    showToast(`Device ${targetCodename} is not currently connected.`);
+  }
+}
+
 function sendTextToAllConnected(text) {
   let sent = 0;
   const snippet = text.length > 36 ? text.slice(0, 36) + '…' : text;
@@ -506,7 +587,7 @@ function sendTextToAllConnected(text) {
       mgr.sendText(text);
       sent++;
       const codename = peerMeta.get(peerId)?.codename ?? 'Unknown';
-      addHistoryEntry({
+      const entry = addHistoryEntry({
         direction: 'sent',
         peerCodename: codename,
         filename: snippet,
@@ -514,7 +595,8 @@ function sendTextToAllConnected(text) {
         sizeBytes: 0,
         kind: 'text',
       });
-      transfersUI.addTextMessage({ text, peerCodename: codename, direction: 'sent' });
+      transfersUI.addTextMessage({ id: entry.id, text, peerCodename: codename, direction: 'sent' });
+      openChatWithPeer(codename);
     }
   }
   if (sent === 0) showToast('No connected peers.');
@@ -534,7 +616,12 @@ function bindTransferManagerEvents(mgr, peerId) {
 
   mgr.on('send-done', ({ transferId, fileName }) => {
     transfersUI.completeSend({ transferId });
-    addHistoryEntry({ direction: 'sent', peerCodename: getMeta(), filename: fileName, sizeBytes: 0, kind: 'file' });
+    const entry = addHistoryEntry({ id: transferId, direction: 'sent', peerCodename: getMeta(), filename: fileName, sizeBytes: 0, kind: 'file' });
+    const sentFile = pendingOutboundFiles.get(fileName);
+    if (sentFile) {
+      saveFileBlob(entry.id, sentFile, fileName, sentFile.type);
+      pendingOutboundFiles.delete(fileName);
+    }
     updateHistoryBadge();
   });
 
@@ -547,23 +634,37 @@ function bindTransferManagerEvents(mgr, peerId) {
     transfersUI.updateProgress({ transferId, bytesTransferred: bytesReceived, totalBytes, speedBps });
   });
 
-  mgr.on('receive-done', ({ transferId, fileName, fileSize, url, blob }) => {
-    transfersUI.completeReceive({ transferId, url, blob, fileName });
-    addHistoryEntry({ direction: 'received', peerCodename: getMeta(), filename: fileName, sizeBytes: fileSize, kind: 'file' });
+  mgr.on('receive-done', ({ transferId, fileName, fileSize, fileType, url, blob }) => {
+    const codename = getMeta();
+    const entry = addHistoryEntry({ id: transferId, direction: 'received', peerCodename: codename, filename: fileName, sizeBytes: fileSize, kind: 'file' });
+
+    if (blob) {
+      saveFileBlob(entry.id, blob, fileName, fileType || blob.type);
+    }
+
+    let saveUrl = url;
+    try {
+      if (blob) saveUrl = URL.createObjectURL(new Blob([blob], { type: 'application/octet-stream' }));
+    } catch { /* use original */ }
+
+    transfersUI.completeReceive({ transferId, url: saveUrl, blob, fileName });
     updateHistoryBadge();
     playChime('complete');
 
-    // Auto-trigger file download/save
-    try {
-      const dlLink = document.createElement('a');
-      dlLink.href = url;
-      dlLink.download = fileName;
-      document.body.appendChild(dlLink);
-      dlLink.click();
-      dlLink.remove();
-    } catch { /* Fallback to manual save button in Transfers UI */ }
-
-    showToast(`🎉 Received "${fileName}" from ${getMeta()}`);
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && !/Windows/i.test(navigator.userAgent));
+    if (!isMobile) {
+      try {
+        const dlLink = document.createElement('a');
+        dlLink.href = saveUrl;
+        dlLink.download = fileName;
+        document.body.appendChild(dlLink);
+        dlLink.click();
+        dlLink.remove();
+      } catch { /* Fallback to manual save button */ }
+      showToast(`🎉 Received "${fileName}" from ${codename}`);
+    } else {
+      showToast(`🎉 Received "${fileName}" from ${codename}! Tap Share / Save below.`);
+    }
   });
 
   mgr.on('send-cancel', ({ transferId }) => {
@@ -574,20 +675,28 @@ function bindTransferManagerEvents(mgr, peerId) {
     transfersUI.cancelTransfer(transferId);
   });
 
-  mgr.on('text-message', ({ text }) => {
-    showTextMessageToast(text, getMeta());
+  mgr.on('text-message', ({ id, text }) => {
+    const codename = getMeta();
+    showTextMessageToast(text, codename);
     const snippet = text.length > 36 ? text.slice(0, 36) + '…' : text;
-    addHistoryEntry({
+    const entry = addHistoryEntry({
+      id: id,
       direction: 'received',
-      peerCodename: getMeta(),
+      peerCodename: codename,
       filename: snippet,
       text: text,
       sizeBytes: 0,
       kind: 'text',
     });
-    transfersUI.addTextMessage({ text, peerCodename: getMeta(), direction: 'received' });
+    transfersUI.addTextMessage({ id: entry.id, text, peerCodename: codename, direction: 'received' });
     updateHistoryBadge();
     playChime('complete');
+
+    if (chatUI.isOpen && chatUI.activePeerCodename === codename) {
+      chatUI.refresh();
+    } else {
+      openChatWithPeer(codename);
+    }
   });
 }
 

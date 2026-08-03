@@ -131,8 +131,17 @@ export class RtcPeer extends EventTarget {
   }
 
   /** Start the connection. Must call this after construction. */
-  async connect() {
-    const iceServers = await getIceServers();
+  async connect(allowTurn = false) {
+    const allServers = await getIceServers();
+    // Two-Stage ICE strategy: restrict to STUN-only initially so LAN peers connect via Direct P2P
+    // without prematurely binding to slower TURN cloud relays.
+    const iceServers = allowTurn
+      ? allServers
+      : allServers.filter((s) => {
+          const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+          return urls.some((u) => u && u.startsWith('stun:'));
+        });
+    console.log(`[rtc] Connecting to ${this.#remoteId} with ${iceServers.length} ICE servers (allowTurn=${allowTurn})`);
     this.#pc = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 });
 
     this.#pc.addEventListener('icecandidate', ({ candidate }) => {
@@ -197,7 +206,7 @@ export class RtcPeer extends EventTarget {
   #setupChannel(channel) {
     this.#channel = channel;
     channel.binaryType = 'arraybuffer';
-    channel.bufferedAmountLowThreshold = 256 * 1024; // Must match BUFFER_LOW in transfer.js
+    channel.bufferedAmountLowThreshold = 2 * 1024 * 1024; // 2 MB — Must match BUFFER_LOW in transfer.js
 
     channel.addEventListener('bufferedamountlow', () => {
       this.dispatchEvent(new CustomEvent('bufferedamountlow'));
@@ -336,17 +345,44 @@ export class RtcPeer extends EventTarget {
     if (!this.#pc) return;
     try {
       const stats = await this.#pc.getStats();
+      let activePair = null;
+
+      // 1. Prefer the candidate pair selected by the transport
       for (const report of stats.values()) {
-        if (report.type === 'candidate-pair' && (report.state === 'succeeded' || report.nominated)) {
-          const localCand = stats.get(report.localCandidateId);
-          const remoteCand = stats.get(report.remoteCandidateId);
-          const isRelayed = localCand?.candidateType === 'relay' || remoteCand?.candidateType === 'relay';
-          const mode = isRelayed ? 'relayed' : 'direct';
-          if (mode !== this.connectionMode) {
-            this.connectionMode = mode;
-            this.dispatchEvent(new CustomEvent('mode-change', { detail: { mode } }));
+        if (report.type === 'transport' && report.selectedCandidatePairId) {
+          activePair = stats.get(report.selectedCandidatePairId);
+          if (activePair) break;
+        }
+      }
+
+      // 2. Fallback to nominated + succeeded pair
+      if (!activePair) {
+        for (const report of stats.values()) {
+          if (report.type === 'candidate-pair' && report.nominated && report.state === 'succeeded') {
+            activePair = report;
+            break;
           }
-          return;
+        }
+      }
+
+      // 3. Fallback to any succeeded pair carrying active traffic
+      if (!activePair) {
+        for (const report of stats.values()) {
+          if (report.type === 'candidate-pair' && report.state === 'succeeded' && (report.bytesSent > 0 || report.bytesReceived > 0)) {
+            activePair = report;
+            break;
+          }
+        }
+      }
+
+      if (activePair) {
+        const localCand = stats.get(activePair.localCandidateId);
+        const remoteCand = stats.get(activePair.remoteCandidateId);
+        const isRelayed = localCand?.candidateType === 'relay' || remoteCand?.candidateType === 'relay';
+        const mode = isRelayed ? 'relayed' : 'direct';
+        if (mode !== this.connectionMode) {
+          this.connectionMode = mode;
+          this.dispatchEvent(new CustomEvent('mode-change', { detail: { mode } }));
         }
       }
     } catch {

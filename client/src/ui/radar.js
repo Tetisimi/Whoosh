@@ -102,9 +102,26 @@ export class RadarUI {
 
     // Pick angle evenly distributed, slight randomness to avoid stacking
     const count = this.#peerEls.size;
-    const baseAngle = (count * 137.5) % 360; // golden angle distribution
-    const angle = baseAngle + (Math.random() * 20 - 10);
-    const ring = count < 3 ? 50 : count < 6 ? 95 : 120; // outer rings first
+    let angle = ((count * 137.5) % 360) + (Math.random() * 20 - 10);
+    let ring = count < 3 ? 60 : count < 6 ? 95 : 125;
+    let { x, y } = polarToPercent(angle, ring);
+
+    // Collision-repulsion check against existing bubbles and central icon (50%, 50%)
+    for (let attempt = 0; attempt < 12; attempt++) {
+      let hasOverlap = Math.hypot(x - 50, y - 50) < 20; // preserve center clearance
+      for (const entry of this.#peerEls.values()) {
+        const ex = parseFloat(entry.el.style.left) || 50;
+        const ey = parseFloat(entry.el.style.top) || 50;
+        if (Math.hypot(x - ex, y - ey) < 24) {
+          hasOverlap = true;
+          break;
+        }
+      }
+      if (!hasOverlap) break;
+      angle = (angle + 45) % 360;
+      if (attempt % 3 === 2) ring = Math.min(135, ring + 20);
+      ({ x, y } = polarToPercent(angle, ring));
+    }
 
     const el = document.createElement('div');
     el.className = 'radar-peer';
@@ -118,13 +135,55 @@ export class RadarUI {
     `;
 
     // Position on radar (convert polar to %)
-    const { x, y } = polarToPercent(angle, ring);
     el.style.left = `${x}%`;
     el.style.top = `${y}%`;
 
-    el.querySelector('.radar-avatar').addEventListener('click', () => {
-      this.#onPeerClick?.(peer.id, peer.codename);
+    // Interactive pointer drag-and-drop vs tap differentiation
+    let isDragging = false;
+    let startX = 0, startY = 0;
+    let origLeft = 0, origTop = 0;
+
+    el.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 && e.button !== undefined) return;
+      startX = e.clientX;
+      startY = e.clientY;
+      origLeft = parseFloat(el.style.left) || x;
+      origTop = parseFloat(el.style.top) || y;
+      isDragging = false;
+      el.setPointerCapture(e.pointerId);
     });
+
+    el.addEventListener('pointermove', (e) => {
+      if (!el.hasPointerCapture(e.pointerId)) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (Math.hypot(dx, dy) > 5) {
+        isDragging = true;
+        el.classList.add('dragging');
+        const container = this.#peersEl.getBoundingClientRect();
+        if (container.width && container.height) {
+          const pctX = (dx / container.width) * 100;
+          const pctY = (dy / container.height) * 100;
+          let newX = Math.max(8, Math.min(92, origLeft + pctX));
+          let newY = Math.max(8, Math.min(92, origTop + pctY));
+          el.style.left = `${newX}%`;
+          el.style.top = `${newY}%`;
+        }
+      }
+    });
+
+    const endDrag = (e) => {
+      if (!el.hasPointerCapture(e.pointerId)) return;
+      el.releasePointerCapture(e.pointerId);
+      el.classList.remove('dragging');
+      if (!isDragging) {
+        this.#onPeerClick?.(peer.id, peer.codename);
+      }
+      isDragging = false;
+    };
+
+    el.addEventListener('pointerup', endDrag);
+    el.addEventListener('pointercancel', endDrag);
 
     // Animate in
     requestAnimationFrame(() => el.classList.add('radar-peer--visible'));

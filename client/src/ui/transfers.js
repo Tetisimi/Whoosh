@@ -13,10 +13,12 @@ export class TransfersUI {
   /** Map<peerId, mode> */
   #peerModes = new Map();
   #onCancel = null;
+  #onOpenChat = null;
 
-  constructor(panelEl, onCancel = null) {
+  constructor(panelEl, onCancel = null, onOpenChat = null) {
     this.#panel = panelEl;
     this.#onCancel = onCancel;
+    this.#onOpenChat = onOpenChat;
     this.#panel.innerHTML = `
       <div class="transfers-header">
         <h3 class="transfers-title">Transfers</h3>
@@ -246,7 +248,8 @@ export class TransfersUI {
       </div>
     `;
 
-    el.querySelector('.copy-text-action-btn').addEventListener('click', () => {
+    el.querySelector('.copy-text-action-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
       copyTextToClipboard(text);
       const btn = el.querySelector('.copy-text-action-btn');
       btn.textContent = '✓ Copied!';
@@ -255,6 +258,14 @@ export class TransfersUI {
         btn.textContent = '📋 Copy';
         btn.style.background = '';
       }, 2500);
+    });
+
+    el.style.cursor = 'pointer';
+    el.title = `Tap to open B2B chat with ${peerCodename}`;
+    el.addEventListener('click', (e) => {
+      if (!e.target.closest('.copy-text-action-btn')) {
+        this.#onOpenChat?.(peerCodename);
+      }
     });
 
     this.#list.prepend(el);
