@@ -259,18 +259,21 @@ signaling.on('room-error', ({ message }) => {
   pairing.showJoinError(message);
 });
 
-signaling.on('reconnecting', ({ attempt }) => {
-  if (attempt === 1) {
-    setStatus('connecting', '◌ Connecting…');
-  } else if (attempt <= 3) {
-    setStatus('connecting', '◌ Server waking up…');
-  } else {
-    setStatus('connecting', '◌ Waking up (~30s on free tier)');
+statusBadge.style.cursor = 'pointer';
+statusBadge.title = 'Click to reconnect immediately';
+statusBadge.addEventListener('click', () => {
+  if (!signaling.connected) {
+    showToast('⚡ Reconnecting to server…');
+    signaling.reconnectNow();
   }
 });
 
+signaling.on('reconnecting', ({ attempt }) => {
+  setStatus('connecting', `◌ Connecting… (attempt ${attempt})`);
+});
+
 signaling.on('disconnected', () => {
-  setStatus('disconnected', '○ Disconnected');
+  setStatus('disconnected', '○ Disconnected (Tap to retry)');
 });
 
 // ── Auto-join from URL ?join=CODE ─────────────────────────────────────────────

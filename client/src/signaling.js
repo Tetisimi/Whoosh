@@ -13,9 +13,9 @@
  *   sig.send('signal', { to: peerId, payload: sdp });
  */
 
-const RECONNECT_BASE_MS = 1000;
-const RECONNECT_MAX_MS = 30_000;
-const CONNECT_TIMEOUT_MS = 10_000; // give up on a single attempt after 10s
+const RECONNECT_BASE_MS = 500;
+const RECONNECT_MAX_MS = 2500;
+const CONNECT_TIMEOUT_MS = 3500; // fail fast after 3.5s per attempt
 
 export class SignalingClient extends EventTarget {
   /** @type {WebSocket | null} */
@@ -43,6 +43,33 @@ export class SignalingClient extends EventTarget {
     this.#url = url;
     this.#codename = codename;
     this.#deviceId = deviceId;
+
+    if (typeof window !== 'undefined') {
+      const triggerFastReconnect = () => {
+        if (!this.connected) {
+          console.log('[signaling] Page visible/focus/online — triggering fast reconnect');
+          this.reconnectNow();
+        }
+      };
+      window.addEventListener('online', triggerFastReconnect);
+      window.addEventListener('focus', triggerFastReconnect);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') triggerFastReconnect();
+      });
+    }
+
+    this.#connect();
+  }
+
+  /** Force an immediate reconnection attempt, resetting backoff */
+  reconnectNow() {
+    clearTimeout(this.#reconnectTimer);
+    clearTimeout(this.#connectTimeoutTimer);
+    this.#reconnectDelay = RECONNECT_BASE_MS;
+    if (this.#ws) {
+      try { this.#ws.close(); } catch { /* ignore */ }
+      this.#ws = null;
+    }
     this.#connect();
   }
 
