@@ -105,6 +105,20 @@ export class TransferManager extends EventTarget {
     const { transferId, file, chunkCount } = state;
     let lastProgressAt = 0;
 
+    // Zero-Latency First Chunk: Instantly read and transmit the first 64KB chunk so transfer starts in 0ms
+    if (state.nextChunk === 0 && chunkCount > 0 && !state.cancelled) {
+      const firstSlice = await file.slice(0, Math.min(CHUNK_SIZE, file.size)).arrayBuffer();
+      const ok = this.#peer.send(firstSlice);
+      if (!ok) {
+        await sleep(2);
+        this.#peer.send(firstSlice);
+      }
+      state.bytesSent += firstSlice.byteLength;
+      state.nextChunk = 1;
+      this.#emitSendProgress(state, Date.now());
+      lastProgressAt = Date.now();
+    }
+
     // 2 MB Slab Double-Buffering: read large blocks from disk once and slice synchronously in memory
     const chunksPerSlab = Math.floor(SLAB_SIZE / CHUNK_SIZE);
     let slabIdx = Math.floor(state.nextChunk / chunksPerSlab);

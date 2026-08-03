@@ -131,17 +131,9 @@ export class RtcPeer extends EventTarget {
   }
 
   /** Start the connection. Must call this after construction. */
-  async connect(allowTurn = false) {
-    const allServers = await getIceServers();
-    // Two-Stage ICE strategy: restrict to STUN-only initially so LAN peers connect via Direct P2P
-    // without prematurely binding to slower TURN cloud relays.
-    const iceServers = allowTurn
-      ? allServers
-      : allServers.filter((s) => {
-          const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
-          return urls.some((u) => u && u.startsWith('stun:'));
-        });
-    console.log(`[rtc] Connecting to ${this.#remoteId} with ${iceServers.length} ICE servers (allowTurn=${allowTurn})`);
+  async connect(allowTurn = true) {
+    const iceServers = await getIceServers();
+    console.log(`[rtc] Connecting to ${this.#remoteId} with ${iceServers.length} ICE servers (instant full ICE)`);
     this.#pc = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle', iceCandidatePoolSize: 10 });
 
     this.#pc.addEventListener('icecandidate', ({ candidate }) => {
@@ -153,8 +145,8 @@ export class RtcPeer extends EventTarget {
     this.#pc.addEventListener('iceconnectionstatechange', () => {
       this.#detectConnectionMode();
       const state = this.#pc.iceConnectionState;
-      if (state === 'failed') {
-        console.warn(`[rtc] ICE connection failed with ${this.#remoteId} — attempting ICE restart`);
+      if (state === 'failed' || state === 'disconnected') {
+        console.warn(`[rtc] ICE connection ${state} with ${this.#remoteId} — attempting ICE restart`);
         try { this.#pc.restartIce(); } catch { /* */ }
       }
     });

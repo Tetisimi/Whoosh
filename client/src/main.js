@@ -10,7 +10,7 @@ import { RadarUI } from './ui/radar.js';
 import { PairingUI } from './ui/pairing.js';
 import { TransfersUI } from './ui/transfers.js';
 import { HistoryUI } from './ui/history.js';
-import { getOrCreateCodename } from './utils/codename.js';
+import { getOrCreateCodename, getOrCreateDeviceId } from './utils/codename.js';
 import { buildSharedSecret, deriveVerificationEmojis } from './utils/verification.js';
 import { addHistoryEntry, loadHistory } from './utils/storage.js';
 import { playChime } from './utils/audio.js';
@@ -58,6 +58,7 @@ const APP_URL = window.location.origin + window.location.pathname;
 // ── State ─────────────────────────────────────────────────────────────────────
 
 const codename = getOrCreateCodename();
+const deviceId = getOrCreateDeviceId();
 
 /** Map<peerId, RtcPeer> */
 const peers = new Map();
@@ -149,7 +150,7 @@ tabBtns.forEach((btn) => {
 
 // ── Signaling ─────────────────────────────────────────────────────────────────
 
-const signaling = new SignalingClient(SIGNALING_URL, codename);
+const signaling = new SignalingClient(SIGNALING_URL, codename, deviceId);
 
 function evictStalePeerByCodename(newPeer) {
   for (const [existingId, meta] of peerMeta.entries()) {
@@ -165,8 +166,11 @@ function evictStalePeerByCodename(newPeer) {
   }
 }
 
-signaling.on('registered', ({ id, localPeers }) => {
+signaling.on('registered', ({ id, codename: regCodename, localPeers }) => {
   localPeerId = id;
+  if (regCodename && regCodename !== codename) {
+    selfCodenameEl.textContent = regCodename;
+  }
   radar.setLocalId(id);
   setStatus('connected', '● Connected');
 
@@ -312,13 +316,13 @@ function createPeer(peerId, initiator, allowTurn = false) {
       radar.updatePeer({ id: peerId }, state);
     }
     if (state === 'failed') {
-      // Auto-retry up to 2 times to avoid infinite loops
+      // Auto-retry up to 5 times for fast recovery without blocking
       const retryCount = (peer._retryCount ?? 0) + 1;
-      if (retryCount > 2) {
+      if (retryCount > 5) {
         console.warn(`[app] Peer ${peerId} failed after ${retryCount} attempts — giving up`);
         return;
       }
-      console.warn(`[app] Peer ${peerId} failed — retry attempt ${retryCount} (enabling TURN fallback)`);
+      console.warn(`[app] Peer ${peerId} failed — retry attempt ${retryCount}`);
       setTimeout(() => {
         if (!peers.has(peerId)) return;
         peers.get(peerId)?.close();
@@ -326,11 +330,10 @@ function createPeer(peerId, initiator, allowTurn = false) {
         transferManagers.delete(peerId);
         if (peerMeta.has(peerId)) {
           const shouldInitiate = localPeerId < peerId;
-          // Pass retry count through so next peer instance knows its attempt #
           const newPeer = createPeer(peerId, shouldInitiate, true);
           newPeer._retryCount = retryCount;
         }
-      }, 1500 * retryCount); // back off: 1.5s, 3s
+      }, 600 * retryCount); // back off: 600ms, 1200ms...
     }
   });
 
@@ -512,10 +515,6 @@ textInput.addEventListener('keydown', (e) => {
 // ── Peer click → send files ───────────────────────────────────────────────────
 
 function handlePeerClick(peerId, peerName) {
-  if (!peers.get(peerId)?.isOpen) {
-    showToast(`Connecting to ${peerName}… try again in a moment.`);
-    return;
-  }
   openFilePicker(peerId);
 }
 
@@ -524,20 +523,42 @@ function handlePeerClick(peerId, peerName) {
 const pendingOutboundFiles = new Map();
 
 function sendFilesToPeer(peerId, files) {
-  const mgr = transferManagers.get(peerId);
-  if (!mgr || !peers.get(peerId)?.isOpen) {
-    showToast('Peer not connected yet — wait a moment and try again.');
-    return;
-  }
+  let mgr = transferManagers.get(peerId);
+  let peer = peers.get(peerId);
+  const peerName = peerMeta.get(peerId)?.codename ?? 'Device';
+
   for (const f of files) {
     pendingOutboundFiles.set(f.name, f);
   }
-  radar.flashPeer(peerId, 'send');
-  mgr.sendFiles(files);
+
+  if (mgr && peer?.isOpen) {
+    radar.flashPeer(peerId, 'send');
+    mgr.sendFiles(files);
+    return;
+  }
+
+  // Queue transfer to begin automatically the instant connection finishes!
+  showToast(`⏳ Connecting to ${peerName}… file transfer will start automatically.`);
+  if (!peer) {
+    initiatePeerConnection(peerId, localPeerId < peerId);
+    peer = peers.get(peerId);
+  }
+  if (peer) {
+    const onOpen = () => {
+      peer.off('channel-open', onOpen);
+      radar.flashPeer(peerId, 'send');
+      transferManagers.get(peerId)?.sendFiles(files);
+    };
+    peer.on('channel-open', onOpen);
+    if (peer.isOpen) onOpen();
+  }
 }
 
 function sendFilesToAllOrSelected(files) {
-  const connected = [...transferManagers.entries()].filter(([id]) => peers.get(id)?.isOpen);
+  let connected = [...transferManagers.entries()].filter(([id]) => peers.get(id)?.isOpen);
+  if (connected.length === 0) {
+    connected = [...peerMeta.entries()];
+  }
   if (connected.length === 0) return showToast('No connected peers. Wait for someone to join.');
   if (connected.length === 1) {
     sendFilesToPeer(connected[0][0], files);
@@ -710,7 +731,7 @@ function showPeerPickerModal(files) {
   modal.className = 'modal-backdrop modal-backdrop--visible';
   modal.id = 'peer-picker-modal';
 
-  const connectedPeers = [...peerMeta.entries()].filter(([id]) => peers.get(id)?.isOpen);
+  const connectedPeers = [...peerMeta.entries()];
 
   modal.innerHTML = `
     <div class="modal">

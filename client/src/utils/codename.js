@@ -3,6 +3,8 @@
  * e.g. "Coral Salmon", "Swift Ember", "Jade Falcon"
  */
 
+import { generateUUID } from './uuid.js';
+
 const ADJECTIVES = [
   'Amber', 'Arctic', 'Azure', 'Blaze', 'Bold', 'Bright', 'Brisk', 'Bronze',
   'Calm', 'Cedar', 'Cobalt', 'Cool', 'Coral', 'Crimson', 'Crystal', 'Cyan',
@@ -63,4 +65,17 @@ export function getOrCreateCodename() {
   sessionStorage.setItem('whoosh:codename', name);
   localStorage.setItem('whoosh:codename', name);
   return name;
+}
+
+/**
+ * Get a stable device ID stored in localStorage, or generate a new one.
+ * @returns {string}
+ */
+export function getOrCreateDeviceId() {
+  const stored = localStorage.getItem('whoosh:deviceId') || sessionStorage.getItem('whoosh:deviceId');
+  if (stored) return stored;
+  const id = generateUUID();
+  try { localStorage.setItem('whoosh:deviceId', id); } catch { /* ignore */ }
+  try { sessionStorage.setItem('whoosh:deviceId', id); } catch { /* ignore */ }
+  return id;
 }

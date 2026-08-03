@@ -181,7 +181,7 @@ wss.on('connection', (ws, req) => {
 
     switch (msg.type) {
       case 'register':
-        handleRegister(ws, id, ip, msg.codename);
+        handleRegister(ws, id, ip, msg.codename, msg.deviceId);
         registered = true;
         peerCodename = msg.codename;
         break;
@@ -254,24 +254,48 @@ function normalizeIp(rawIp) {
   return ip;
 }
 
-function handleRegister(ws, id, rawIp, codename) {
+const ADJECTIVES = ['Amber', 'Arctic', 'Azure', 'Blaze', 'Bold', 'Bright', 'Brisk', 'Bronze', 'Cobalt', 'Cool', 'Coral', 'Crimson', 'Crystal', 'Cyan', 'Dark', 'Deep', 'Electric', 'Ember', 'Emerald', 'Fiery', 'Fleet', 'Frosty', 'Golden', 'Granite', 'Indigo', 'Ivory', 'Jade', 'Jasper', 'Lunar', 'Neon', 'Noble', 'Obsidian', 'Ocean', 'Onyx', 'Opal', 'Quartz', 'Rapid', 'Raven', 'Royal', 'Ruby', 'Sapphire', 'Scarlet', 'Shadow', 'Silver', 'Slate', 'Sleek', 'Solar', 'Stealth', 'Storm', 'Swift', 'Teal', 'Topaz', 'Velvet', 'Vivid', 'Wild', 'Zephyr'];
+const NOUNS = ['Albatross', 'Arrow', 'Aspen', 'Badger', 'Bison', 'Blizzard', 'Canyon', 'Cobra', 'Comet', 'Condor', 'Coyote', 'Crane', 'Dagger', 'Delta', 'Eagle', 'Echo', 'Falcon', 'Flare', 'Flash', 'Fox', 'Glacier', 'Hawk', 'Horizon', 'Jaguar', 'Kestrel', 'Lance', 'Lynx', 'Mantis', 'Marten', 'Moose', 'Narwhal', 'Nebula', 'Osprey', 'Otter', 'Panther', 'Peregrine', 'Phoenix', 'Puma', 'Quasar', 'Raptor', 'Raven', 'Ridge', 'Robin', 'Sable', 'Salmon', 'Sparrow', 'Stingray', 'Storm', 'Thunder', 'Tiger', 'Titan', 'Viper', 'Vortex', 'Warden', 'Wolf', 'Wren', 'Zephyr'];
+
+function generateFreshCodename() {
+  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+  return `${adj} ${noun}`;
+}
+
+function handleRegister(ws, id, rawIp, codename, deviceId) {
   const ip = normalizeIp(rawIp);
 
-  // Ensure codename is unique across active connections without terminating sockets
-  let uniqueCodename = codename;
-  let counter = 2;
-  while ([...peers.values()].some((p) => p.codename === uniqueCodename && p.id !== id)) {
-    uniqueCodename = `${codename} ${counter++}`;
+  // Evict stale or duplicate sessions from the same deviceId (reloads, tabs, wifi drop reconnects)
+  for (const [existingId, p] of peers.entries()) {
+    if (existingId === id) continue;
+    const isSameDevice = (deviceId && p.deviceId && p.deviceId === deviceId) || (p.ip === ip && p.codename === codename && !deviceId);
+    if (isSameDevice) {
+      console.log(`[ws] Evicting stale session ${existingId} (${p.codename}) replaced by new session ${id}`);
+      peers.delete(existingId);
+      removeFromLocalRoom(p.ip, existingId);
+      removeFromCodeRooms(existingId);
+      for (const localPeer of getLocalPeers(p.ip, existingId)) {
+        send(localPeer.ws, { type: 'peer-left', id: existingId });
+      }
+      try { p.ws.terminate(); } catch { /* */ }
+    }
   }
 
-  const peer = { id, codename: uniqueCodename, ws, ip };
+  // Ensure codename is unique across active connections without appending numbers (" 2", " 3")
+  let uniqueCodename = codename;
+  while ([...peers.values()].some((p) => p.codename === uniqueCodename && p.id !== id)) {
+    uniqueCodename = generateFreshCodename();
+  }
+
+  const peer = { id, codename: uniqueCodename, deviceId, ws, ip };
   peers.set(id, peer);
   addToLocalRoom(ip, peer);
 
   const localPeers = getLocalPeers(ip, id).map(serializePeer);
 
   // Tell the new peer its own ID and who's already here
-  send(ws, { type: 'registered', id, codename, localPeers });
+  send(ws, { type: 'registered', id, codename: uniqueCodename, localPeers });
 
   // Tell existing local peers about the new arrival
   for (const existing of getLocalPeers(ip, id)) {

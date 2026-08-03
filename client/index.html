@@ -65,30 +65,30 @@
           <!-- Hidden File Input for iOS/Browser compatibility -->
           <input type="file" id="global-file-input" multiple style="display:none" />
 
-          <!-- Dropzone: File / Media -->
-          <div id="dropzone" class="dropzone" role="button" tabindex="0"
-               aria-label="Drop files here or click to send File / Media">
-            <div class="dropzone-inner">
-              <span class="dropzone-icon">📁</span>
-              <span class="dropzone-label">File / Media</span>
-              <span class="dropzone-sub">Drop files here or click to browse</span>
+          <!-- Quick action controls grid -->
+          <div class="quick-tools-grid">
+            <!-- Dropzone: File / Media -->
+            <div id="dropzone" class="dropzone" role="button" tabindex="0"
+                 aria-label="Drop files here or click to send File / Media">
+              <div class="dropzone-inner">
+                <span class="dropzone-icon">📁</span>
+                <span class="dropzone-label">Send Files or Media</span>
+                <span class="dropzone-sub">Click to browse or drag &amp; drop</span>
+              </div>
             </div>
+
+            <!-- Paste action button -->
+            <button id="paste-btn" class="btn btn--ghost paste-action-btn" title="Paste files or text from clipboard (Ctrl+V / Cmd+V)">
+              <span class="btn-icon">📋</span> Paste Clipboard
+            </button>
           </div>
-
-          <!-- Paste action button -->
-          <button id="paste-btn" class="btn btn--ghost btn--wide paste-action-btn">
-            <span class="btn-icon">📋</span> Paste from Clipboard
-          </button>
-
-
-
 
           <!-- Text send -->
           <div class="text-send-row">
-            <textarea id="text-input" class="text-input"
-              placeholder="Type a message to send…"
-              rows="2" maxlength="4096"></textarea>
-            <button id="text-send-btn" class="btn btn--primary btn--icon-only" aria-label="Send message">
+            <input type="text" id="text-input" class="text-input"
+              placeholder="Broadcast message or start B2B chat…"
+              maxlength="4096" autocomplete="off" />
+            <button id="text-send-btn" class="btn btn--primary btn--icon-only" aria-label="Send message" title="Send quick message">
               ↑
             </button>
           </div>
@@ -121,8 +121,6 @@
         </aside>
 
       </main>
-
-    <input type="file" id="global-file-input" multiple style="display: none;" />
 
     <script type="module" src="/src/main.js"></script>
   </body>

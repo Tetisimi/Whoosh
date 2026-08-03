@@ -176,10 +176,13 @@ body {
 /* ── Main layout ───────────────────────────────────────────────── */
 .app-main {
   display: grid;
-  grid-template-columns: 1fr 380px;
+  grid-template-columns: minmax(400px, 1fr) minmax(420px, 480px);
   gap: 0;
   flex: 1;
   min-height: 0;
+  height: calc(100vh - 66px);
+  max-height: calc(100vh - 66px);
+  overflow: hidden;
 }
 
 /* ── Radar section ─────────────────────────────────────────────── */
@@ -187,10 +190,11 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 32px 24px;
-  gap: 20px;
+  padding: 20px 24px;
+  gap: 16px;
   border-right: 1px solid var(--border);
   overflow-y: auto;
+  height: 100%;
 }
 
 /* ── Radar ─────────────────────────────────────────────────────── */
@@ -377,18 +381,29 @@ body {
   max-width: 340px;
 }
 
-/* ── Dropzone ───────────────────────────────────────────────────── */
+/* ── Quick Tools Grid & Dropzone ────────────────────────────────── */
+.quick-tools-grid {
+  display: grid;
+  grid-template-columns: 1fr 140px;
+  gap: 10px;
+  width: 100%;
+  max-width: 440px;
+  align-items: stretch;
+}
+
 .dropzone {
   width: 100%;
-  max-width: 420px;
   border: 2px dashed var(--border);
   border-radius: var(--radius-lg);
-  padding: 28px 20px;
+  padding: 16px 14px;
   cursor: pointer;
   transition: var(--transition);
   background: var(--bg-elevated);
   text-align: center;
   user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .dropzone:hover,
@@ -409,33 +424,32 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
-.dropzone-icon  { font-size: 2rem; }
-.dropzone-label { font-size: 0.95rem; font-weight: 600; color: var(--text-primary); }
-.dropzone-sub   { font-size: 0.78rem; color: var(--text-muted); }
+.dropzone-icon  { font-size: 1.6rem; }
+.dropzone-label { font-size: 0.9rem; font-weight: 600; color: var(--text-primary); }
+.dropzone-sub   { font-size: 0.75rem; color: var(--text-muted); }
 
 /* ── Text send ──────────────────────────────────────────────────── */
 .text-send-row {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  max-width: 420px;
+  max-width: 440px;
 }
 
 .text-input {
   flex: 1;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-pill);
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 16px; /* 16px prevents iOS Safari from auto-zooming page on focus */
-  padding: 10px 14px;
-  resize: none;
+  padding: 10px 16px;
   transition: var(--transition);
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
 /* Prevent iOS Safari input focus auto-zoom across all input elements */
@@ -453,11 +467,18 @@ input, textarea, select, .otp-digit {
 .text-input::placeholder { color: var(--text-muted); }
 
 .paste-action-btn {
-  max-width: 420px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
+  gap: 4px;
   font-weight: 600;
-  border-radius: var(--radius-md);
-  padding: 12px 18px;
+  font-size: 0.82rem;
+  border-radius: var(--radius-lg);
+  padding: 12px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
 }
 
 .paste-action-btn:hover {
@@ -1205,13 +1226,21 @@ input, textarea, select, .otp-digit {
 @media (max-width: 900px) {
   .app-main {
     grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto auto;
+    height: auto;
+    max-height: none;
+    overflow: visible;
   }
 
-  .radar-section { border-right: none; border-bottom: 1px solid var(--border); padding: 20px 16px; }
+  .radar-section { border-right: none; border-bottom: 1px solid var(--border); padding: 20px 16px; height: auto; overflow: visible; }
   .radar-container { max-width: 320px; }
 
-  .side-panel { min-height: 400px; }
+  .side-panel { min-height: 450px; }
+  .quick-tools-grid { max-width: 100%; }
+}
+
+@media (max-width: 520px) {
+  .quick-tools-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 480px) {
@@ -1251,6 +1280,22 @@ input, textarea, select, .otp-digit {
   pointer-events: all;
   position: relative !important;
   height: 100% !important;
+  flex: 1;
+}
+
+@media (max-width: 900px) {
+  .chat-panel-overlay--active {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    height: 100dvh !important;
+    z-index: 9999 !important;
+    background: var(--bg-primary);
+  }
 }
 
 .chat-header {

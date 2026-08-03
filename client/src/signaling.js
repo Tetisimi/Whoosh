@@ -22,6 +22,7 @@ export class SignalingClient extends EventTarget {
   #ws = null;
   #url;
   #codename;
+  #deviceId;
   #reconnectDelay = RECONNECT_BASE_MS;
   #reconnectTimer = null;
   #connectTimeoutTimer = null;
@@ -35,11 +36,13 @@ export class SignalingClient extends EventTarget {
   /**
    * @param {string} url - WebSocket URL e.g. 'ws://localhost:3000'
    * @param {string} codename - This device's codename
+   * @param {string} [deviceId] - This device's stable ID
    */
-  constructor(url, codename) {
+  constructor(url, codename, deviceId = null) {
     super();
     this.#url = url;
     this.#codename = codename;
+    this.#deviceId = deviceId;
     this.#connect();
   }
 
@@ -68,7 +71,7 @@ export class SignalingClient extends EventTarget {
       this.#reconnectDelay = RECONNECT_BASE_MS;
       this.#attemptCount = 0;
       // Register immediately on connection
-      this.#rawSend({ type: 'register', codename: this.#codename });
+      this.#rawSend({ type: 'register', codename: this.#codename, deviceId: this.#deviceId });
     });
 
     ws.addEventListener('message', (event) => {
