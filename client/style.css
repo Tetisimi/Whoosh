@@ -176,7 +176,7 @@ body {
 /* ── Main layout ───────────────────────────────────────────────── */
 .app-main {
   display: grid;
-  grid-template-columns: minmax(320px, 440px) 1fr;
+  grid-template-columns: 1fr minmax(300px, 350px);
   gap: 0;
   flex: 1;
   min-height: 0;
