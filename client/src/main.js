@@ -219,6 +219,7 @@ signaling.on('signal', ({ from, payload }) => {
       mgr.cancelSend(payload.transferId);
       mgr.cancelReceive(payload.transferId);
     }
+    transfersUI.cancelTransfer(payload.transferId);
     return;
   }
 
@@ -285,7 +286,7 @@ function initiatePeerConnection(peerId, asInitiator) {
   createPeer(peerId, asInitiator);
 }
 
-function createPeer(peerId, initiator, allowTurn = true) {
+function createPeer(peerId, initiator, allowTurn = false) {
   const peer = new RtcPeer({
     signaling,
     localId: localPeerId,
