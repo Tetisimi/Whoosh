@@ -14,7 +14,6 @@
 | 🎯 | **Draggable Radar UI** | Non-overlapping peer bubble placement with smooth drag-and-drop repositioning |
 | 💬 | **Interactive B2B Chat** | Threaded conversation view, 1-tap message copy, and real-time open-on-receive |
 | 🔗 | **Cross-network pairing** | 6-digit room code + QR code for connecting across different networks |
-| 🛡️ | **Emoji verification** | Visual verification sequence to confirm connection security (MITM protection) |
 | 📦 | **Fast chunked transfers** | 64 KB binary chunks with WebRTC backpressure flow control & bi-directional ACKs |
 | 💾 | **IndexedDB file persistence** | Received & sent files stay permanently downloadable/shareable in History |
 | 📱 | **Mobile save safeguards** | Native Share Sheet (`navigator.share`) + forced download headers to prevent mobile PDF tab takeover |
@@ -99,7 +98,6 @@ TURN traffic is DTLS-encrypted — the relay can see *that* data flows but not *
 ## Security
 
 - **DTLS Encryption** — all WebRTC DataChannel traffic is encrypted end-to-end by the browser
-- **Emoji Verification** — 4-emoji sequence derived from SHA-256 hash of room secret. Mis-matched keys produce distinct emoji sequences
 - **Zero Server Storage** — signaling server holds peer metadata in memory only. No database, no logs, no storage of files or messages
 
 ---
