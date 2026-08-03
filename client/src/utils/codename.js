@@ -29,7 +29,7 @@ const NOUNS = [
   'Brook', 'Buck', 'Canary', 'Canyon', 'Cedar', 'Cliff', 'Cloud',
   'Cobra', 'Comet', 'Condor', 'Coyote', 'Crane', 'Creek', 'Crest',
   'Crow', 'Current', 'Dagger', 'Dawn', 'Delta', 'Drift',
-  'Eagle', 'Echo', 'Falcon', 'Fawn', 'Finch', 'Flare', 'Flash',
+  'Eagle', 'Echo', 'Elios', 'Falcon', 'Fawn', 'Finch', 'Flare', 'Flash',
   'Fox', 'Gale', 'Gear', 'Geyser', 'Glacier', 'Grove',
   'Hawk', 'Heron', 'Horizon', 'Ibex', 'Island', 'Jade', 'Jaguar',
   'Kestrel', 'Kingfisher', 'Lance', 'Lark', 'Lynx', 'Magpie',
@@ -38,7 +38,7 @@ const NOUNS = [
   'Panther', 'Parcel', 'Peak', 'Pebble', 'Peregrine', 'Phoenix',
   'Pillar', 'Pine', 'Puma', 'Quasar', 'Rabbit', 'Raptor', 'Raven',
   'Reef', 'Ridge', 'Ripple', 'Robin', 'Rock', 'Sable', 'Salmon',
-  'Sandpiper', 'Sparrow', 'Sphinx', 'Sprint', 'Stallion', 'Stingray',
+  'Sandpiper', 'Skay', 'Sparrow', 'Sphinx', 'Sprint', 'Stallion', 'Stingray',
   'Storm', 'Swallow', 'Swan', 'Thorn', 'Thunder', 'Tiger', 'Titan',
   'Torch', 'Totem', 'Trout', 'Viper', 'Vortex', 'Warden', 'Weasel',
   'Whirlwind', 'Wildcat', 'Wolf', 'Wren', 'Zephyr',
@@ -60,7 +60,12 @@ export function generateCodename() {
  */
 export function getOrCreateCodename() {
   const sessionStored = sessionStorage.getItem('whoosh:codename');
-  if (sessionStored) return sessionStored;
+  if (sessionStored && !/\d/.test(sessionStored)) return sessionStored;
+  const localStored = localStorage.getItem('whoosh:codename');
+  if (localStored && !/\d/.test(localStored)) {
+    sessionStorage.setItem('whoosh:codename', localStored);
+    return localStored;
+  }
   const name = generateCodename();
   sessionStorage.setItem('whoosh:codename', name);
   localStorage.setItem('whoosh:codename', name);

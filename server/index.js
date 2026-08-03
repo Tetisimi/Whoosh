@@ -263,8 +263,9 @@ function generateFreshCodename() {
   return `${adj} ${noun}`;
 }
 
-function handleRegister(ws, id, rawIp, codename, deviceId) {
+function handleRegister(ws, id, rawIp, rawCodename, deviceId) {
   const ip = normalizeIp(rawIp);
+  const codename = (rawCodename || '').replace(/\s*\d+$/, '').trim() || generateFreshCodename();
 
   // Evict stale or duplicate sessions from the same deviceId (reloads, tabs, wifi drop reconnects)
   for (const [existingId, p] of peers.entries()) {
@@ -283,7 +284,7 @@ function handleRegister(ws, id, rawIp, codename, deviceId) {
   }
 
   // Ensure codename is unique across active connections without appending numbers (" 2", " 3")
-  let uniqueCodename = codename;
+  let uniqueCodename = /\d/.test(codename) ? generateFreshCodename() : codename;
   while ([...peers.values()].some((p) => p.codename === uniqueCodename && p.id !== id)) {
     uniqueCodename = generateFreshCodename();
   }

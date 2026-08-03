@@ -28,6 +28,8 @@ export class TransferManager extends EventTarget {
   #sending = new Map();
   /** Map<transferId, ReceiveState> */
   #receiving = new Map();
+  /** Buffer for any binary chunks received slightly before transfer-start metadata */
+  #orphanChunks = [];
 
   #sendQueue = [];
   #isSending = false;
@@ -95,6 +97,7 @@ export class TransferManager extends EventTarget {
     while (this.#sendQueue.length > 0) {
       const state = this.#sendQueue.shift();
       if (!state || state.cancelled) continue;
+      await sleep(20); // Give remote peer event loop 20ms to process transfer-start JSON metadata
       await this.#pumpChunks(state);
     }
 
@@ -383,6 +386,15 @@ export class TransferManager extends EventTarget {
     this.dispatchEvent(new CustomEvent('receive-start', {
       detail: { transferId: msg.transferId, fileName: msg.fileName, fileSize: msg.fileSize },
     }));
+
+    // Consume any binary chunks that arrived just before metadata
+    if (this.#orphanChunks && this.#orphanChunks.length > 0) {
+      const orphans = [...this.#orphanChunks];
+      this.#orphanChunks = [];
+      for (const buf of orphans) {
+        this.#onBinaryChunk(buf);
+      }
+    }
   }
 
   #onBinaryChunk(arrayBuffer) {
@@ -398,7 +410,10 @@ export class TransferManager extends EventTarget {
         }
       }
     }
-    if (!state) return;
+    if (!state) {
+      this.#orphanChunks.push(arrayBuffer);
+      return;
+    }
 
     // Zero-copy store raw ArrayBuffer chunk into array
     state.chunks[state.receivedCount] = arrayBuffer;

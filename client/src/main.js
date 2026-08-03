@@ -713,7 +713,7 @@ function bindTransferManagerEvents(mgr, peerId) {
     if (chatUI.isOpen && chatUI.activePeerCodename === codename) {
       chatUI.refresh();
     } else {
-      openChatWithPeer(codename);
+      showTextMessageToast(text, codename);
     }
   });
 }
@@ -810,6 +810,11 @@ function showTextMessageToast(text, from) {
     document.body.appendChild(toast);
   }
   toast.innerHTML = `<strong>💬 ${from}</strong><br>${escapeHtml(text.slice(0, 120))}`;
+  toast.onclick = () => {
+    openChatWithPeer(from);
+    toast.classList.remove('toast--visible', 'toast--message');
+  };
+  toast.style.cursor = 'pointer';
   toast.classList.add('toast--visible', 'toast--message');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
