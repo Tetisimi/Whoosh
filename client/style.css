@@ -1211,6 +1211,7 @@ input, textarea, select, .otp-digit {
 .toast--visible {
   transform: translateX(-50%) translateY(0);
   opacity: 1;
+  pointer-events: auto !important;
 }
 
 .toast--message { border-color: var(--border-accent); text-align: left; }
