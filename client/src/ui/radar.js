@@ -164,10 +164,28 @@ export class RadarUI {
         if (container.width && container.height) {
           const pctX = (dx / container.width) * 100;
           const pctY = (dy / container.height) * 100;
-          let newX = Math.max(8, Math.min(92, origLeft + pctX));
-          let newY = Math.max(8, Math.min(92, origTop + pctY));
-          el.style.left = `${newX}%`;
-          el.style.top = `${newY}%`;
+          let rawX = origLeft + pctX;
+          let rawY = origTop + pctY;
+
+          // Radial constraint math (center = 50%, 50%)
+          const distX = rawX - 50;
+          const distY = rawY - 50;
+          const dist = Math.hypot(distX, distY);
+          const maxR = 34; // Max radius %: keeps bubble strictly inside radar circle!
+          const minR = 14; // Min radius %: keeps bubble clear of central icon!
+
+          if (dist > maxR) {
+            const ang = Math.atan2(distY, distX);
+            rawX = 50 + maxR * Math.cos(ang);
+            rawY = 50 + maxR * Math.sin(ang);
+          } else if (dist < minR) {
+            const ang = Math.atan2(distY, distX);
+            rawX = 50 + minR * Math.cos(ang);
+            rawY = 50 + minR * Math.sin(ang);
+          }
+
+          el.style.left = `${rawX}%`;
+          el.style.top = `${rawY}%`;
         }
       }
     });
@@ -242,8 +260,8 @@ export class RadarUI {
 /** Convert polar coords on the radar circle to CSS % positions */
 function polarToPercent(angleDeg, radius) {
   const rad = ((angleDeg - 90) * Math.PI) / 180;
-  // radar-wrap is 300x300 viewBox, map radius from 0-148 to 0-50% offset from center
-  const pct = (radius / 148) * 50;
+  // radar-wrap is 300x300 viewBox, map radius from 0-148 to max 34% offset from center
+  const pct = (radius / 148) * 34;
   return {
     x: 50 + pct * Math.cos(rad),
     y: 50 + pct * Math.sin(rad),

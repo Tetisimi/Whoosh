@@ -45,6 +45,7 @@ export class ChatUI {
 
     this.render();
     this.#panel.classList.add('chat-panel-overlay--active');
+    document.querySelector('.side-panel')?.classList.add('side-panel--chat-active');
 
     // Scroll to bottom immediately
     requestAnimationFrame(() => this.#scrollToBottom());
@@ -52,6 +53,7 @@ export class ChatUI {
 
   close() {
     this.#panel.classList.remove('chat-panel-overlay--active');
+    document.querySelector('.side-panel')?.classList.remove('side-panel--chat-active');
     this.#activePeer = null;
     this.#activePeerId = null;
     this.#panel.innerHTML = '';
