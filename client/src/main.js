@@ -12,7 +12,7 @@ import { TransfersUI } from './ui/transfers.js';
 import { HistoryUI } from './ui/history.js';
 import { getOrCreateCodename } from './utils/codename.js';
 import { buildSharedSecret, deriveVerificationEmojis } from './utils/verification.js';
-import { addHistoryEntry } from './utils/storage.js';
+import { addHistoryEntry, loadHistory } from './utils/storage.js';
 import { playChime } from './utils/audio.js';
 import { ChatUI } from './ui/chat.js';
 import { saveFileBlob } from './utils/fileStorage.js';
@@ -758,7 +758,7 @@ function setStatus(state, text) {
 
 function updateHistoryBadge() {
   try {
-    const count = JSON.parse(localStorage.getItem('whoosh:history') ?? '[]').length;
+    const count = loadHistory().length;
     historyBadge.textContent = count > 0 ? String(count) : '';
     historyBadge.style.display = count > 0 ? 'inline-flex' : 'none';
   } catch { /* */ }
