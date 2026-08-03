@@ -292,19 +292,20 @@ export class TransferManager extends EventTarget {
     const state = this.#sending.get(transferId);
     if (state) {
       state.cancelled = true;
-      this.#sending.delete(transferId);
-      this.#sendJSON({ type: 'transfer-cancel', transferId });
-      this.dispatchEvent(new CustomEvent('send-cancel', { detail: { transferId } }));
     }
+    this.#sending.delete(transferId);
+    this.#sendJSON({ type: 'transfer-cancel', transferId });
+    this.dispatchEvent(new CustomEvent('send-cancel', { detail: { transferId } }));
   }
 
   cancelReceive(transferId) {
     const state = this.#receiving.get(transferId);
     if (state) {
-      this.#receiving.delete(transferId);
-      this.#sendJSON({ type: 'transfer-cancel', transferId });
-      this.dispatchEvent(new CustomEvent('receive-cancel', { detail: { transferId } }));
+      state.cancelled = true;
     }
+    this.#receiving.delete(transferId);
+    this.#sendJSON({ type: 'transfer-cancel', transferId });
+    this.dispatchEvent(new CustomEvent('receive-cancel', { detail: { transferId } }));
   }
 
   resumeSend(transferId, fromChunk) {

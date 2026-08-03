@@ -285,7 +285,7 @@ function initiatePeerConnection(peerId, asInitiator) {
   createPeer(peerId, asInitiator);
 }
 
-function createPeer(peerId, initiator, allowTurn = false) {
+function createPeer(peerId, initiator, allowTurn = true) {
   const peer = new RtcPeer({
     signaling,
     localId: localPeerId,
