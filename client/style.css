@@ -1216,11 +1216,17 @@ input, textarea, select, .otp-digit {
 .toast--message { border-color: var(--border-accent); text-align: left; }
 .toast strong { color: var(--accent); }
 
-/* ── Scrollbar styling ───────────────────────────────────────────── */
-::-webkit-scrollbar       { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-pill); }
-::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+/* ── Scrollbar hidden globally across app ───────────────────────── */
+* {
+  scrollbar-width: none !important; /* Firefox */
+  -ms-overflow-style: none !important; /* IE & Edge */
+}
+
+::-webkit-scrollbar {
+  display: none !important; /* Chrome, Safari, Opera */
+  width: 0 !important;
+  height: 0 !important;
+}
 
 /* ── Responsive ──────────────────────────────────────────────────── */
 @media (max-width: 900px) {
