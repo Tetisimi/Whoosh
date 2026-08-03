@@ -804,6 +804,19 @@ function showToast(msg) {
   toastTimer = setTimeout(() => toast.classList.remove('toast--visible'), 3500);
 }
 
+historyBadge.style.cursor = 'pointer';
+historyBadge.title = 'Open chat view';
+historyBadge.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const history = loadHistory();
+  const latestPeer = history.find(h => h.peerCodename)?.peerCodename;
+  if (latestPeer) {
+    openChatWithPeer(latestPeer);
+  } else {
+    document.querySelector('.tab-btn[data-tab="history"]')?.click();
+  }
+});
+
 function showTextMessageToast(text, from) {
   let toast = document.getElementById('whoosh-toast');
   if (!toast) {
@@ -822,7 +835,7 @@ function showTextMessageToast(text, from) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     toast.classList.remove('toast--visible', 'toast--message');
-  }, 6000);
+  }, 10000);
 }
 
 function escapeHtml(str) {

@@ -271,7 +271,7 @@ export class TransfersUI {
     this.#list.prepend(el);
     this.#items.set(id, el);
     this.#updateEmpty();
-    this.#scheduleRemove(id, 4000);
+    this.#scheduleRemove(id, 15000);
   }
 
   #scheduleRemove(transferId, delay) {
